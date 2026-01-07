@@ -113,6 +113,19 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           pkgname="multicliprelay-bin"
 
+          # AUR tooling policy: `makepkg` refuses to run as root.
+          # The archlinux:base-devel container runs as root by default, so we
+          # create an unprivileged user for all AUR repo operations.
+          if ! id -u builder >/dev/null 2>&1; then
+            useradd -m -U builder
+          fi
+          home="/home/builder"
+
+          # Ensure the checked-out workspace is writable by builder.
+          if [[ -n "${GITHUB_WORKSPACE:-}" && -d "${GITHUB_WORKSPACE}" ]]; then
+            chown -R builder:builder "${GITHUB_WORKSPACE}"
+          fi
+
           tarball="dist/release/multicliprelay-${ver}-x86_64-linux.tar.gz"
           if [[ ! -f "$tarball" ]]; then
             echo "tarball not found: $tarball" >&2
@@ -122,45 +135,48 @@ jobs:
           sha256="$(sha256sum "$tarball" | awk '{print $1}')"
 
           # Setup SSH for AUR push
-          export HOME="${HOME:-/root}"
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
-          chmod 600 "$HOME/.ssh/id_ed25519"
-          touch "$HOME/.ssh/known_hosts"
-          chmod 644 "$HOME/.ssh/known_hosts"
-          # Preload AUR host keys to avoid interactive prompts.
-          ssh-keyscan -t ed25519,rsa aur.archlinux.org | tee -a "$HOME/.ssh/known_hosts" >/dev/null
-          # Log what we have (useful when debugging CI failures).
-          ssh-keygen -F aur.archlinux.org || true
+          install -d -m 700 "$home/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$home/.ssh/id_ed25519"
+          chmod 600 "$home/.ssh/id_ed25519"
+          : > "$home/.ssh/known_hosts"
+          chmod 644 "$home/.ssh/known_hosts"
+          chown -R builder:builder "$home/.ssh"
 
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          # Preload AUR host keys to avoid interactive prompts.
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org | tee -a "$home/.ssh/known_hosts" >/dev/null
+          # Log what we have (useful when debugging CI failures).
+          ssh-keygen -F aur.archlinux.org -f "$home/.ssh/known_hosts" || true
 
           # Clone AUR repo
-          rm -rf aur && mkdir -p aur
-          git clone "ssh://aur@aur.archlinux.org/${pkgname}.git" aur
+          rm -rf aur
+          runuser -u builder -- bash -euo pipefail -c "
+            export HOME=\"$home\";
+            export GIT_SSH_COMMAND=\"ssh -i $home/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$home/.ssh/known_hosts\";
 
-          # Render PKGBUILD from template
-          tpl="packaging/arch/PKGBUILD.bin.in"
-          if [[ ! -f "$tpl" ]]; then
-            echo "missing template: $tpl" >&2
-            exit 1
-          fi
-          sed -e "s/@PKGVER@/${ver}/g" -e "s/@SHA256@/${sha256}/g" "$tpl" > aur/PKGBUILD
+            git clone \"ssh://aur@aur.archlinux.org/${pkgname}.git\" aur;
 
-          # Generate .SRCINFO
-          (cd aur && makepkg --printsrcinfo > .SRCINFO)
+            # Render PKGBUILD from template
+            tpl=\"packaging/arch/PKGBUILD.bin.in\";
+            if [[ ! -f \"$tpl\" ]]; then
+              echo \"missing template: $tpl\" >&2;
+              exit 1;
+            fi;
+            sed -e \"s/@PKGVER@/${ver}/g\" -e \"s/@SHA256@/${sha256}/g\" \"$tpl\" > aur/PKGBUILD;
 
-          # Commit & push (no-op if unchanged)
-          cd aur
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+            # Generate .SRCINFO (must not run as root)
+            (cd aur && makepkg --printsrcinfo > .SRCINFO);
 
-          if git diff --quiet; then
-            echo "AUR repo already up to date.";
-            exit 0
-          fi
+            # Commit & push (no-op if unchanged)
+            cd aur;
+            git config user.name \"github-actions\";
+            git config user.email \"github-actions@github.com\";
 
-          git add PKGBUILD .SRCINFO
-          git commit -m "multicliprelay-bin: update to v${ver}"
-          git push
+            if git diff --quiet; then
+              echo \"AUR repo already up to date.\";
+              exit 0;
+            fi;
+
+            git add PKGBUILD .SRCINFO;
+            git commit -m \"multicliprelay-bin: update to v${ver}\";
+            git push;
+          "
