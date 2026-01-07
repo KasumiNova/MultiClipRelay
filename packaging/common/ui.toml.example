@@ -1,0 +1,13 @@
+# Example UI config for ui-gtk / ui-tray
+relay_addr = "127.0.0.1:8080"
+room = "default"
+
+max_text_bytes = 1048576
+max_image_bytes = 20971520
+max_file_bytes = 20971520
+
+# force-png | multi | passthrough | spoof-png
+image_mode = "force-png"
+
+# auto | zh-cn | en
+language = "auto"

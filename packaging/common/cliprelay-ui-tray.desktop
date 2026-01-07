@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=ClipRelay Tray
+Exec=cliprelay-ui-tray
+Terminal=false
+Categories=Utility;
+Icon=edit-paste

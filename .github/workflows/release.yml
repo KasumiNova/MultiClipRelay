@@ -1,0 +1,54 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binaries
+        run: cargo build --release -p relay -p node -p ui-gtk -p ui-tray
+
+      - name: Create tarball
+        id: tar
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          outdir="dist/release"
+          pkg="cliprelay-${ver}-x86_64-linux"
+          rm -rf "$outdir" && mkdir -p "$outdir/$pkg"
+          install -m 0755 target/release/relay   "$outdir/$pkg/relay"
+          install -m 0755 target/release/node    "$outdir/$pkg/node"
+          install -m 0755 target/release/ui-gtk  "$outdir/$pkg/ui-gtk"
+          install -m 0755 target/release/ui-tray "$outdir/$pkg/ui-tray"
+          cp -r packaging "$outdir/$pkg/packaging"
+          cp README.md "$outdir/$pkg/README.md"
+          (cd "$outdir" && tar -czf "${pkg}.tar.gz" "$pkg")
+          echo "path=$outdir/${pkg}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Build .deb
+        id: deb
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          chmod +x packaging/deb/build_deb.sh
+          packaging/deb/build_deb.sh "$ver"
+          echo "path=dist/deb/cliprelay_${ver}_amd64.deb" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.tar.outputs.path }}
+            ${{ steps.deb.outputs.path }}

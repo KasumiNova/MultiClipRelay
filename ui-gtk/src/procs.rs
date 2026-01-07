@@ -1,0 +1,105 @@
+use anyhow::Context;
+
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+#[derive(Default)]
+pub struct Procs {
+    pub relay: Option<Child>,
+    pub watch: Option<Child>,
+    pub apply: Option<Child>,
+}
+
+pub fn terminate_child(mut child: Child, label: &'static str, log_tx: mpsc::Sender<String>) {
+    // Best-effort graceful shutdown so `node wl-watch` can clean up its `wl-paste --watch` children.
+    thread::spawn(move || {
+        let pid = child.id() as i32;
+        if pid > 0 {
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(800);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    let _ = log_tx.send(format!("{label} exited"));
+                    return;
+                }
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(30));
+                }
+                Err(e) => {
+                    let _ = log_tx.send(format!("{label} wait failed: {e:?}"));
+                    return;
+                }
+            }
+        }
+
+        // Hard kill fallback.
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = log_tx.send(format!("{label} killed"));
+    });
+}
+
+pub fn find_sibling_binary(name: &str) -> Option<PathBuf> {
+    // When running via `cargo run -p ui-gtk`, current_exe usually is target/debug/ui-gtk.
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let candidate = dir.join(name);
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+pub fn spawn_relay(log_tx: &mpsc::Sender<String>) -> anyhow::Result<Child> {
+    // Prefer sibling binary; fallback to PATH.
+    let relay_bin = find_sibling_binary("cliprelay-relay")
+        .or_else(|| find_sibling_binary("relay"))
+        .unwrap_or_else(|| PathBuf::from("cliprelay-relay"));
+    let mut cmd = Command::new(relay_bin);
+    spawn_with_logs(&mut cmd, log_tx, "relay")
+}
+
+pub fn spawn_node(log_tx: &mpsc::Sender<String>, args: &[&str]) -> anyhow::Result<Child> {
+    // Prefer sibling binary; fallback to PATH.
+    let node_bin = find_sibling_binary("cliprelay-node")
+        .or_else(|| find_sibling_binary("node"))
+        .unwrap_or_else(|| PathBuf::from("cliprelay-node"));
+    let mut cmd = Command::new(node_bin);
+    cmd.args(args);
+    spawn_with_logs(&mut cmd, log_tx, "node")
+}
+
+fn spawn_with_logs(cmd: &mut Command, log_tx: &mpsc::Sender<String>, tag: &str) -> anyhow::Result<Child> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().with_context(|| format!("spawn {tag}"))?;
+
+    if let Some(out) = child.stdout.take() {
+        pipe_lines(out, log_tx.clone(), format!("{tag}:stdout"));
+    }
+    if let Some(err) = child.stderr.take() {
+        pipe_lines(err, log_tx.clone(), format!("{tag}:stderr"));
+    }
+    Ok(child)
+}
+
+fn pipe_lines<R: std::io::Read + Send + 'static>(reader: R, log_tx: mpsc::Sender<String>, prefix: String) {
+    thread::spawn(move || {
+        let br = BufReader::new(reader);
+        for line in br.lines().flatten() {
+            let _ = log_tx.send(format!("[{prefix}] {line}"));
+        }
+    });
+}

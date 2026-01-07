@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=ClipRelay Control Panel
+Exec=cliprelay-ui-gtk
+Terminal=false
+Categories=Utility;
+Icon=edit-paste

@@ -1,0 +1,35 @@
+[package]
+name = "node"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+clap = { version = "=4.5.47", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+utils = { path = "../utils" }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1.0"
+sha2 = "0.10"
+hex = "0.4"
+libc = "0.2"
+infer = "0.16"
+# URI parsing (file://... in text/uri-list)
+url = "2"
+# Tar bundling for multi-file / folder clipboard sync
+tar = "0.4"
+walkdir = "2"
+# image: decode common formats and (optionally) encode as PNG for force-png mode
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+# Native Wayland clipboard access (supports offering multiple MIME types for a single selection)
+wl-clipboard-rs = "0.9.3"
+
+# Optional debug logging (enabled only when RUST_LOG is set)
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+tempfile = "3"

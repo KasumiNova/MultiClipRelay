@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+default-members = [
+    "utils",
+    "relay",
+    "node",
+]
+members = [
+    "utils",
+    "relay",
+    "node",
+    "ui-gtk",
+    "ui-tray",
+]
