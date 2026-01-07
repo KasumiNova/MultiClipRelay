@@ -108,11 +108,10 @@ jobs:
         shell: bash
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          AUR_PKGNAME: ${{ secrets.AUR_PKGNAME }}
         run: |
           set -euo pipefail
           ver="${GITHUB_REF_NAME#v}"
-          pkgname="${AUR_PKGNAME:-multicliprelay-bin}"
+          pkgname="multicliprelay-bin"
 
           tarball="dist/release/multicliprelay-${ver}-x86_64-linux.tar.gz"
           if [[ ! -f "$tarball" ]]; then
@@ -155,5 +154,5 @@ jobs:
           fi
 
           git add PKGBUILD .SRCINFO
-          git commit -m "Update to v${ver}"
+          git commit -m "multicliprelay-bin: update to v${ver}"
           git push

@@ -24,7 +24,7 @@ package() {
   local dir="multicliprelay-${pkgver}-x86_64-linux"
 
   cd "${srcdir}"
-  bsdtar -xf "${srcdir}/multicliprelay-${pkgver}-x86_64-linux.tar.gz"
+  tar -xzf "${srcdir}/multicliprelay-${pkgver}-x86_64-linux.tar.gz"
 
   install -Dm755 "${dir}/multicliprelay-relay"   "${pkgdir}/usr/bin/multicliprelay-relay"
   install -Dm755 "${dir}/multicliprelay-node"    "${pkgdir}/usr/bin/multicliprelay-node"
