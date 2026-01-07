@@ -7,6 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::i18n::{t, K, Lang};
+use crate::util::normalize_relay_addr_for_connect;
 
 #[derive(Debug, Clone)]
 struct ProbeResult {
@@ -15,6 +16,7 @@ struct ProbeResult {
 }
 
 fn probe_tcp(addr: &str, timeout: Duration) -> ProbeResult {
+    let addr = normalize_relay_addr_for_connect(addr);
     let addr = addr.trim();
     if addr.is_empty() {
         return ProbeResult {

@@ -63,12 +63,18 @@ pub fn find_sibling_binary(name: &str) -> Option<PathBuf> {
     }
 }
 
-pub fn spawn_relay(log_tx: &mpsc::Sender<String>) -> anyhow::Result<Child> {
+pub fn spawn_relay(log_tx: &mpsc::Sender<String>, bind_addr: &str) -> anyhow::Result<Child> {
     // Prefer sibling binary; fallback to PATH.
     let relay_bin = find_sibling_binary("multicliprelay-relay")
         .or_else(|| find_sibling_binary("relay"))
         .unwrap_or_else(|| PathBuf::from("multicliprelay-relay"));
     let mut cmd = Command::new(relay_bin);
+
+    let bind_addr = bind_addr.trim();
+    if !bind_addr.is_empty() {
+        cmd.args(["--bind", bind_addr]);
+    }
+
     spawn_with_logs(&mut cmd, log_tx, "relay")
 }
 

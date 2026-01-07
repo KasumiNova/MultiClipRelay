@@ -15,3 +15,7 @@ target/
 
 # JetBrains / RustRover / IntelliJ
 .idea/
+
+# Local AUR working directories (do not commit to main repo)
+multicliprelay-bin/
+multicliprelay-git/

@@ -7,7 +7,7 @@ use std::thread;
 
 use crate::i18n::{t, K, Lang};
 use crate::procs::spawn_node;
-use crate::util::{chrono_like_timestamp, fake_remote_device_id};
+use crate::util::{chrono_like_timestamp, fake_remote_device_id, normalize_relay_addr_for_connect};
 
 use super::constants::DEFAULT_IMAGE_MODE_ID;
 
@@ -45,7 +45,8 @@ pub fn connect_diagnostics_handlers(
     } = inputs;
 
     w.send_test_text.connect_clicked(clone!(@strong log_tx, @weak relay_entry, @weak room_entry => move |_| {
-        let relay = relay_entry.text().to_string();
+        let relay_raw = relay_entry.text().to_string();
+        let relay = normalize_relay_addr_for_connect(&relay_raw);
         let room = room_entry.text().to_string();
         let text = format!("multicliprelay test @{}", chrono_like_timestamp());
         // Important: `node wl-apply` intentionally ignores messages whose `device_id` equals the
@@ -107,6 +108,7 @@ pub fn connect_diagnostics_handlers(
                 if let Some(file) = d.file() {
                     if let Some(path) = file.path() {
                         let relay = relay_entry.text().to_string();
+                        let relay = normalize_relay_addr_for_connect(&relay);
                         let room = room_entry.text().to_string();
                         let max_bytes = max_image_spin.value() as usize;
                         let image_mode = image_mode_combo
@@ -170,6 +172,7 @@ pub fn connect_diagnostics_handlers(
                 if let Some(file) = d.file() {
                     if let Some(path) = file.path() {
                         let relay = relay_entry.text().to_string();
+                        let relay = normalize_relay_addr_for_connect(&relay);
                         let room = room_entry.text().to_string();
                         let max_bytes = max_file_spin.value() as usize;
 

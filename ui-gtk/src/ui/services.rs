@@ -6,6 +6,7 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use crate::i18n::{t, K, Lang};
 use crate::procs::{spawn_node, spawn_relay, terminate_child, Procs};
+use crate::util::normalize_relay_addr_for_connect;
 
 use super::constants::DEFAULT_IMAGE_MODE_ID;
 use super::helpers::{combo_active_id_or, spin_usize};
@@ -85,7 +86,7 @@ pub fn connect_service_handlers(
     } = inputs;
 
     // Relay
-    w.start_relay_btn.connect_clicked(clone!(@strong procs, @strong log_tx, @strong update_services_ui => move |_| {
+    w.start_relay_btn.connect_clicked(clone!(@strong procs, @strong log_tx, @weak relay_entry, @strong update_services_ui => move |_| {
         let mut p = procs.lock().unwrap();
         if p.relay.is_some() {
             let _ = log_tx.send("relay already running".into());
@@ -93,7 +94,8 @@ pub fn connect_service_handlers(
             update_services_ui();
             return;
         }
-        match spawn_relay(&log_tx) {
+        let bind_addr = relay_entry.text().to_string();
+        match spawn_relay(&log_tx, &bind_addr) {
             Ok(child) => {
                 p.relay = Some(child);
                 let _ = log_tx.send("started relay".into());
@@ -127,7 +129,8 @@ pub fn connect_service_handlers(
             update_services_ui();
             return;
         }
-        let relay = relay_entry.text().to_string();
+        let relay_raw = relay_entry.text().to_string();
+        let relay = normalize_relay_addr_for_connect(&relay_raw);
         let room = room_entry.text().to_string();
         let max_text = spin_usize(&max_text_spin);
         let max_img = spin_usize(&max_image_spin);
@@ -186,7 +189,8 @@ pub fn connect_service_handlers(
             update_services_ui();
             return;
         }
-        let relay = relay_entry.text().to_string();
+        let relay_raw = relay_entry.text().to_string();
+        let relay = normalize_relay_addr_for_connect(&relay_raw);
         let room = room_entry.text().to_string();
         let image_mode = combo_active_id_or(&image_mode_combo, DEFAULT_IMAGE_MODE_ID);
 
@@ -227,7 +231,8 @@ pub fn connect_service_handlers(
 
     // Start/stop all
     w.start_all.connect_clicked(clone!(@strong procs, @strong log_tx, @weak relay_entry, @weak room_entry, @weak max_text_spin, @weak max_image_spin, @weak max_file_spin, @weak image_mode_combo, @strong update_services_ui => move |_| {
-        let relay = relay_entry.text().to_string();
+        let relay_bind = relay_entry.text().to_string();
+        let relay = normalize_relay_addr_for_connect(&relay_bind);
         let room = room_entry.text().to_string();
         let max_text = spin_usize(&max_text_spin);
         let max_img = spin_usize(&max_image_spin);
@@ -237,7 +242,7 @@ pub fn connect_service_handlers(
         let mut p = procs.lock().unwrap();
 
         if p.relay.is_none() {
-            match spawn_relay(&log_tx) {
+            match spawn_relay(&log_tx, &relay_bind) {
                 Ok(child) => {
                     p.relay = Some(child);
                     let _ = log_tx.send("started relay".into());

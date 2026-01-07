@@ -1,36 +1,38 @@
 # Maintainer: YOU <you@example.com>
-#
-# This is a template PKGBUILD for Arch Linux / AUR.
-# Update `url` and `source` to match your repository.
 
-pkgname=multicliprelay
-pkgver=0.1.0
+pkgname=multicliprelay-git
+_pkgbase=multicliprelay
+pkgver=0
 pkgrel=1
-pkgdesc="Wayland clipboard sync via TCP relay (relay/node/ui-gtk/ui-tray)"
+pkgdesc="Wayland clipboard sync via TCP relay (git build)"
 arch=(x86_64)
 url="https://github.com/KasumiNova/MultiClipRelay"
 license=(GPL3)
+
 depends=(wl-clipboard gtk4)
-makedepends=(rust cargo)
+makedepends=(git rust cargo)
 
-# Option A: build from git tag (recommended for AUR if you publish tags)
-# source=("git+${url}.git#tag=v${pkgver}")
-# sha256sums=('SKIP')
+provides=(multicliprelay)
+conflicts=(multicliprelay multicliprelay-bin)
 
-# Option B: build from a release tarball (if you publish one)
-# source=("${url}/releases/download/v${pkgver}/multicliprelay-${pkgver}-x86_64-linux.tar.gz")
-# sha256sums=('SKIP')
-
-source=("git+${url}.git#tag=v${pkgver}")
+source=("${_pkgbase}::git+${url}.git")
 sha256sums=('SKIP')
 
+pkgver() {
+  cd "${srcdir}/${_pkgbase}"
+  # Prefer tags if they exist; fall back to commit count.
+  local v
+  v=$(git describe --long --tags --abbrev=7 2>/dev/null) || v="r$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
+  printf '%s' "${v}" | sed 's/^v//; s/-/./g'
+}
+
 build() {
-  cd "${srcdir}/multicliprelay" || cd "${srcdir}/MultiClipRelay" || cd "${srcdir}/${pkgname}"
+  cd "${srcdir}/${_pkgbase}"
   cargo build --release -p relay -p node -p ui-gtk -p ui-tray
 }
 
 package() {
-  cd "${srcdir}/multicliprelay" || cd "${srcdir}/MultiClipRelay" || cd "${srcdir}/${pkgname}"
+  cd "${srcdir}/${_pkgbase}"
 
   install -Dm755 target/release/relay   "${pkgdir}/usr/bin/multicliprelay-relay"
   install -Dm755 target/release/node    "${pkgdir}/usr/bin/multicliprelay-node"
@@ -44,5 +46,5 @@ package() {
   install -Dm644 packaging/common/systemd/multicliprelay-wl-watch.service "${pkgdir}/usr/lib/systemd/user/multicliprelay-wl-watch.service"
   install -Dm644 packaging/common/systemd/multicliprelay-wl-apply.service "${pkgdir}/usr/lib/systemd/user/multicliprelay-wl-apply.service"
 
-  install -Dm644 packaging/common/ui.toml.example "${pkgdir}/usr/share/doc/${pkgname}/ui.toml.example"
+  install -Dm644 packaging/common/ui.toml.example "${pkgdir}/usr/share/doc/${_pkgbase}/ui.toml.example"
 }
