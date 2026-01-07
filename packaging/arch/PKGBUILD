@@ -9,7 +9,7 @@ pkgrel=1
 pkgdesc="Wayland clipboard sync via TCP relay (relay/node/ui-gtk/ui-tray)"
 arch=(x86_64)
 url="https://example.invalid/multicliprelay"
-license=(MIT)
+license=(GPL3)
 depends=(wl-clipboard gtk4)
 makedepends=(rust cargo)
 
