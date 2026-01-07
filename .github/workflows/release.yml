@@ -122,11 +122,19 @@ jobs:
           sha256="$(sha256sum "$tarball" | awk '{print $1}')"
 
           # Setup SSH for AUR push
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -t ed25519,rsa aur.archlinux.org >> ~/.ssh/known_hosts
+          export HOME="${HOME:-/root}"
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          touch "$HOME/.ssh/known_hosts"
+          chmod 644 "$HOME/.ssh/known_hosts"
+          # Preload AUR host keys to avoid interactive prompts.
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org | tee -a "$HOME/.ssh/known_hosts" >/dev/null
+          # Log what we have (useful when debugging CI failures).
+          ssh-keygen -F aur.archlinux.org || true
+
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
 
           # Clone AUR repo
           rm -rf aur && mkdir -p aur

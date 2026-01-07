@@ -15,7 +15,16 @@ license=(GPL3)
 depends=(wl-clipboard gtk4)
 
 provides=(multicliprelay)
-conflicts=(multicliprelay)
+# When users enable `OPTIONS=(debug)` in makepkg.conf, a split debug package
+# like `multicliprelay-bin-debug` may be installed alongside the main package.
+# Add cross-variant debug packages to conflicts so switching between -bin/-git
+# won't get stuck on stale debug package dependencies.
+conflicts=(
+  multicliprelay
+  multicliprelay-git
+  multicliprelay-debug
+  multicliprelay-git-debug
+)
 
 source=("${url}/releases/download/v${pkgver}/multicliprelay-${pkgver}-x86_64-linux.tar.gz")
 sha256sums=('@SHA256@')
