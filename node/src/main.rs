@@ -1,44 +1,28 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::fs::File;
-use std::io::Cursor;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use url::Url;
-use walkdir::WalkDir;
 
 use utils::{Kind, Message};
 
-const FILE_SUPPRESS_KEY: &str = "application/x-cliprelay-file";
-const URI_LIST_MIME: &str = "text/uri-list";
-const GNOME_COPIED_FILES_MIME: &str = "x-special/gnome-copied-files";
-const TAR_MIME: &str = "application/x-tar";
+use node::clipboard::{wl_copy, wl_copy_multi, wl_paste};
+use node::consts::{FILE_SUPPRESS_KEY, GNOME_COPIED_FILES_MIME, URI_LIST_MIME};
+use node::hash::sha256_hex;
+use node::history::{record_recv, record_send};
+use node::image_mode::{parse_image_mode, ImageMode};
+use node::net::{connect, send_frame, send_join};
+use node::paths::{default_state_dir, first_8, is_tar_payload, received_dir, safe_for_filename};
+use node::suppress::{is_file_suppressed, is_suppressed, set_file_suppress, set_suppress};
+use node::transfer_file::{
+    build_uri_list, collect_clipboard_paths, list_files_recursively, send_file, send_paths_as_file,
+    unpack_tar_bytes,
+};
+use node::transfer_image::{image_mimes, send_image, to_png};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ImageMode {
-    Passthrough,
-    ForcePng,
-    MultiMime,
-    SpoofPng,
-}
-
-fn parse_image_mode(s: &str) -> anyhow::Result<ImageMode> {
-    match s {
-        "passthrough" => Ok(ImageMode::Passthrough),
-        "force-png" => Ok(ImageMode::ForcePng),
-        "multi" | "multi-mime" => Ok(ImageMode::MultiMime),
-        "spoof-png" | "fake-png" => Ok(ImageMode::SpoofPng),
-        other => anyhow::bail!(
-            "invalid --image-mode {}, expected force-png|multi|passthrough|spoof-png",
-            other
-        ),
-    }
-}
+// (ImageMode + parsing are in node::image_mode)
 
 #[derive(Clone, Debug)]
 struct Ctx {
@@ -47,7 +31,7 @@ struct Ctx {
 }
 
 #[derive(Parser)]
-#[command(name = "clip-node")]
+#[command(name = "multicliprelay-node")]
 struct Cli {
     /// Directory for local state (device id, suppress markers).
     #[arg(long, global = true)]
@@ -195,14 +179,15 @@ async fn main() -> anyhow::Result<()> {
             image_mode,
         } => {
             let im = parse_image_mode(&image_mode)?;
-            send_image(&ctx, &room, &file, &relay, max_bytes, im).await?
+            send_image(&ctx.device_id, &room, &file, &relay, max_bytes, im).await?;
+            println!("sent image to room {}", room);
         }
         Commands::SendFile {
             room,
             file,
             relay,
             max_file_bytes,
-        } => send_file(&ctx, &room, &file, &relay, max_file_bytes).await?,
+        } => send_file(&ctx.device_id, &room, &file, &relay, max_file_bytes).await?,
         Commands::WlWatch {
             room,
             relay,
@@ -257,388 +242,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn connect(relay: &str) -> anyhow::Result<TcpStream> {
-    let s = TcpStream::connect(relay).await.context("connect")?;
-    Ok(s)
-}
-
-async fn send_frame(mut stream: TcpStream, buf: Vec<u8>) -> anyhow::Result<()> {
-    stream.write_u32(buf.len() as u32).await.context("write len")?;
-    stream.write_all(&buf).await.context("write payload")?;
-    Ok(())
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    hex::encode(h.finalize())
-}
-
-fn default_state_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("XDG_RUNTIME_DIR") {
-        return PathBuf::from(d).join("cliprelay");
-    }
-    let uid = unsafe { libc::geteuid() };
-    PathBuf::from(format!("/tmp/cliprelay-{}", uid))
-}
-
-fn safe_for_filename(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' => c,
-            _ => '_',
-        })
-        .collect()
-}
-
-fn is_tar_payload(name: &str, mime: Option<&str>) -> bool {
-    mime == Some(TAR_MIME) || name.to_ascii_lowercase().ends_with(".tar")
-}
-
-fn first_8(s: &str) -> &str {
-    if s.len() >= 8 {
-        &s[..8]
-    } else {
-        s
-    }
-}
-
-fn default_data_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("XDG_DATA_HOME") {
-        return PathBuf::from(d).join("cliprelay");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".local/share/cliprelay");
-    }
-    // Last resort: state_dir should exist; fall back to /tmp.
-    PathBuf::from("/tmp").join("cliprelay")
-}
-
-fn received_dir() -> PathBuf {
-    default_data_dir().join("received")
-}
-
-fn history_path() -> PathBuf {
-    default_data_dir().join("history.jsonl")
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct HistoryEvent {
-    ts_ms: u64,
-    dir: String,
-    room: String,
-    relay: String,
-    local_device_id: String,
-    remote_device_id: Option<String>,
-    kind: String,
-    mime: Option<String>,
-    name: Option<String>,
-    bytes: usize,
-    sha256: Option<String>,
-}
-
-async fn append_history(event: HistoryEvent) {
-    // Best-effort; never fail the main flow.
-    let p = history_path();
-    if let Some(parent) = p.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-
-    let line = match serde_json::to_string(&event) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    let mut f = match tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&p)
-        .await
-    {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
-    let _ = f.write_all(line.as_bytes()).await;
-    let _ = f.write_all(b"\n").await;
-}
-
-fn kind_to_string(k: &Kind) -> String {
-    match k {
-        Kind::Text => "text",
-        Kind::Image => "image",
-        Kind::File => "file",
-        Kind::Join => "join",
-    }
-    .to_string()
-}
-
-async fn record_send(
-    ctx: &Ctx,
-    room: &str,
-    relay: &str,
-    kind: Kind,
-    mime: Option<String>,
-    name: Option<String>,
-    bytes: usize,
-    sha256: Option<String>,
-) {
-    append_history(HistoryEvent {
-        ts_ms: utils::now_ms(),
-        dir: "send".to_string(),
-        room: room.to_string(),
-        relay: relay.to_string(),
-        local_device_id: ctx.device_id.clone(),
-        remote_device_id: None,
-        kind: kind_to_string(&kind),
-        mime,
-        name,
-        bytes,
-        sha256,
-    })
-    .await;
-}
-
-async fn record_recv(ctx: &Ctx, room: &str, relay: &str, msg: &Message) {
-    append_history(HistoryEvent {
-        ts_ms: utils::now_ms(),
-        dir: "recv".to_string(),
-        room: room.to_string(),
-        relay: relay.to_string(),
-        local_device_id: ctx.device_id.clone(),
-        remote_device_id: Some(msg.device_id.clone()),
-        kind: kind_to_string(&msg.kind),
-        mime: msg.mime.clone(),
-        name: msg.name.clone(),
-        bytes: msg.payload.as_ref().map(|p| p.len()).unwrap_or(0),
-        sha256: msg.sha256.clone(),
-    })
-    .await;
-}
-
-fn detect_file_mime(bytes: &[u8], file: &PathBuf) -> String {
-    if let Some(kind) = infer::get(bytes) {
-        return kind.mime_type().to_string();
-    }
-    // Extension-based minimal hints for common cases.
-    let ext = file
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "txt" | "md" | "rs" | "toml" | "json" | "yaml" | "yml" => "text/plain;charset=utf-8".to_string(),
-        _ => "application/octet-stream".to_string(),
-    }
-}
-
-fn parse_uri_list(bytes: &[u8]) -> Vec<Url> {
-    let s = String::from_utf8_lossy(bytes);
-    s.lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .filter(|l| !l.starts_with('#'))
-        // gnome format starts with: "copy" or "cut"
-        .filter(|l| *l != "copy" && *l != "cut")
-        .filter_map(|l| Url::parse(l).ok())
-        .collect()
-}
-
-fn collect_clipboard_paths(bytes: &[u8]) -> Vec<PathBuf> {
-    parse_uri_list(bytes)
-        .into_iter()
-        .filter_map(|u| u.to_file_path().ok())
-        .collect()
-}
-
-fn bundle_name_for(paths: &[PathBuf]) -> String {
-    if paths.len() == 1 {
-        if let Some(n) = paths[0].file_name().and_then(|s| s.to_str()) {
-            return format!("{}.tar", n);
-        }
-    }
-    format!("cliprelay-bundle-{}.tar", utils::now_ms())
-}
-
-fn build_tar_bundle(paths: &[PathBuf]) -> anyhow::Result<Vec<u8>> {
-    let mut builder = tar::Builder::new(Vec::new());
-
-    for p in paths {
-        let name = p
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("item")
-            .to_string();
-
-        let md = std::fs::metadata(p)
-            .with_context(|| format!("metadata {}", p.display()))?;
-        if md.is_dir() {
-            // Preserve the directory as a top-level folder in the archive.
-            builder
-                .append_dir_all(&name, p)
-                .with_context(|| format!("append dir {}", p.display()))?;
-        } else if md.is_file() {
-            builder
-                .append_path_with_name(p, &name)
-                .with_context(|| format!("append file {}", p.display()))?;
-        } else {
-            // Skip symlinks/special files for safety.
-            continue;
-        }
-    }
-
-    let out = builder.into_inner().context("finish tar")?;
-    Ok(out)
-}
-
-fn unpack_tar_bytes(bytes: &[u8], dest: &PathBuf) -> anyhow::Result<()> {
-    let mut ar = tar::Archive::new(Cursor::new(bytes));
-    for e in ar.entries().context("tar entries")? {
-        let mut e = e.context("tar entry")?;
-        // `unpack_in` defends against path traversal.
-        e.unpack_in(dest).context("unpack_in")?;
-    }
-    Ok(())
-}
-
-fn build_uri_list(paths: &[PathBuf]) -> String {
-    let mut out = String::new();
-    for p in paths {
-        if let Ok(u) = Url::from_file_path(p) {
-            out.push_str(u.as_str());
-            out.push('\n');
-        }
-    }
-    out
-}
-
-fn list_files_recursively(dir: &PathBuf, max_items: usize) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.path().to_path_buf())
-        .collect();
-    files.sort();
-    if files.len() > max_items {
-        files.truncate(max_items);
-    }
-    files
-}
-
-async fn send_file(ctx: &Ctx, room: &str, file: &PathBuf, relay: &str, max_file_bytes: usize) -> anyhow::Result<()> {
-    let bytes = tokio::fs::read(file).await.context("read file")?;
-    if bytes.len() > max_file_bytes {
-        anyhow::bail!("file too large: {} bytes > {}", bytes.len(), max_file_bytes);
-    }
-    let name = file
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("file")
-        .to_string();
-    let mime = detect_file_mime(&bytes, file);
-    let sha = sha256_hex(&bytes);
-
-    let stream = connect(relay).await?;
-    let mut msg = Message::new_file(&ctx.device_id, room, &name, &mime, bytes);
-    msg.sha256 = Some(sha.clone());
-    send_frame(stream, msg.to_bytes()).await?;
-    record_send(
-        ctx,
-        room,
-        relay,
-        Kind::File,
-        Some(mime),
-        Some(name.clone()),
-        msg.size,
-        Some(sha),
-    )
-    .await;
-    println!("sent file '{}' to room {}", name, room);
-    Ok(())
-}
-
-async fn send_paths_as_file(ctx: &Ctx, room: &str, relay: &str, paths: Vec<PathBuf>, max_file_bytes: usize) -> anyhow::Result<Option<String>> {
-    if paths.is_empty() {
-        return Ok(None);
-    }
-
-    // Single regular file: send raw bytes (best compatibility).
-    if paths.len() == 1 {
-        let md = tokio::fs::metadata(&paths[0]).await;
-        if let Ok(md) = md {
-            if md.is_file() {
-                let bytes = tokio::fs::read(&paths[0]).await.context("read file")?;
-                if bytes.is_empty() || bytes.len() > max_file_bytes {
-                    return Ok(None);
-                }
-                let sha = sha256_hex(&bytes);
-                if is_suppressed(&ctx.state_dir, room, FILE_SUPPRESS_KEY, &sha).await {
-                    return Ok(None);
-                }
-                let name = paths[0]
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("file")
-                    .to_string();
-                let mime = detect_file_mime(&bytes, &paths[0]);
-
-                let stream = connect(relay).await?;
-                let mut msg = Message::new_file(&ctx.device_id, room, &name, &mime, bytes);
-                msg.sha256 = Some(sha.clone());
-                send_frame(stream, msg.to_bytes()).await?;
-
-                record_send(
-                    ctx,
-                    room,
-                    relay,
-                    Kind::File,
-                    Some(mime),
-                    Some(name),
-                    msg.size,
-                    Some(sha.clone()),
-                )
-                .await;
-                return Ok(Some(sha));
-            }
-        }
-    }
-
-    // Multiple items or a directory: bundle into a tar.
-    // Build tar in a blocking task (std::fs + tar builder).
-    let paths2 = paths.clone();
-    let tar_bytes = tokio::task::spawn_blocking(move || build_tar_bundle(&paths2))
-        .await
-        .context("tar build join")??;
-    if tar_bytes.is_empty() || tar_bytes.len() > max_file_bytes {
-        return Ok(None);
-    }
-    let sha = sha256_hex(&tar_bytes);
-    if is_suppressed(&ctx.state_dir, room, FILE_SUPPRESS_KEY, &sha).await {
-        return Ok(None);
-    }
-    let name = bundle_name_for(&paths);
-
-    let stream = connect(relay).await?;
-    let mut msg = Message::new_file(&ctx.device_id, room, &name, TAR_MIME, tar_bytes);
-    msg.sha256 = Some(sha.clone());
-    send_frame(stream, msg.to_bytes()).await?;
-
-    record_send(
-        ctx,
-        room,
-        relay,
-        Kind::File,
-        Some(TAR_MIME.to_string()),
-        Some(name),
-        msg.size,
-        Some(sha.clone()),
-    )
-    .await;
-    Ok(Some(sha))
-}
-
 #[cfg(unix)]
 fn acquire_instance_lock(state_dir: &PathBuf, name: &str, room: &str, relay: &str) -> anyhow::Result<File> {
     use std::os::unix::io::AsRawFd;
@@ -689,96 +292,6 @@ async fn get_or_create_device_id(state_dir: &PathBuf) -> anyhow::Result<String> 
     let id = uuid::Uuid::new_v4().to_string();
     tokio::fs::write(&p, &id).await.context("write device_id")?;
     Ok(id)
-}
-
-fn suppress_path(state_dir: &PathBuf, room: &str, mime: &str) -> PathBuf {
-    // include room to allow multiple rooms on same machine
-    let safe_room = room.replace('/', "_");
-    let safe_mime = mime.replace('/', "_").replace(';', "_").replace('=', "_");
-    state_dir.join(format!("suppress_{}_{}", safe_room, safe_mime))
-}
-
-async fn set_suppress(state_dir: &PathBuf, room: &str, mime: &str, sha: &str, ttl: Duration) {
-    let expires = utils::now_ms().saturating_add(ttl.as_millis() as u64);
-    let p = suppress_path(state_dir, room, mime);
-    let _ = tokio::fs::write(p, format!("{}\n{}\n", sha, expires)).await;
-}
-
-async fn is_suppressed(state_dir: &PathBuf, room: &str, mime: &str, sha: &str) -> bool {
-    let p = suppress_path(state_dir, room, mime);
-    let s = match tokio::fs::read_to_string(p).await {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let mut it = s.lines();
-    let ssha = it.next().unwrap_or("").trim();
-    let sexp = it.next().unwrap_or("0").trim();
-    if ssha != sha {
-        return false;
-    }
-    let exp: u64 = sexp.parse().unwrap_or(0);
-    utils::now_ms() <= exp
-}
-
-async fn wl_paste(mime: &str) -> anyhow::Result<Vec<u8>> {
-    // wl-paste exits non-zero if the requested type is unavailable.
-    let out = Command::new("wl-paste")
-        .arg("--no-newline")
-        .arg("--type")
-        .arg(mime)
-        .output()
-        .await
-        .context("spawn wl-paste")?;
-    if !out.status.success() {
-        anyhow::bail!("wl-paste unavailable: {}", mime);
-    }
-    Ok(out.stdout)
-}
-
-async fn wl_copy(mime: &str, bytes: &[u8]) -> anyhow::Result<()> {
-    wl_copy_multi(vec![(mime.to_string(), bytes.to_vec())]).await
-}
-
-async fn wl_copy_multi(items: Vec<(String, Vec<u8>)>) -> anyhow::Result<()> {
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        use wl_clipboard_rs::copy::{ClipboardType, Error as WlCopyError, MimeSource, MimeType, Options, Seat, Source};
-
-        let mk_sources = |items: &[(String, Vec<u8>)]| -> Vec<MimeSource> {
-            items
-                .iter()
-                .map(|(mime, bytes)| MimeSource {
-                    source: Source::Bytes(bytes.clone().into_boxed_slice()),
-                    mime_type: MimeType::Specific(mime.clone()),
-                })
-                .collect()
-        };
-
-        let sources = mk_sources(&items);
-
-        // Practical note:
-        // - Setting images to PRIMARY can confuse some toolchains / bridges.
-        // - Many apps only use the regular clipboard for paste.
-        // So we only set BOTH for text, and use Regular-only for non-text payloads.
-        let want_both = items.iter().any(|(mime, _)| mime.starts_with("text/"));
-        let clipboard = if want_both { ClipboardType::Both } else { ClipboardType::Regular };
-
-        let mut opts = Options::new();
-        opts.clipboard(clipboard).seat(Seat::All);
-
-        match opts.copy_multi(sources.clone()) {
-            Ok(()) => Ok(()),
-            Err(WlCopyError::PrimarySelectionUnsupported) if want_both => {
-                // Fallback: regular clipboard only.
-                let mut opts = Options::new();
-                opts.clipboard(ClipboardType::Regular).seat(Seat::All);
-                opts.copy_multi(sources).map_err(|e| anyhow::anyhow!(e))
-            }
-            Err(e) => Err(anyhow::anyhow!(e)),
-        }
-    })
-    .await
-    .context("wl_copy_multi join")??;
-    Ok(())
 }
 
 async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf) -> anyhow::Result<()> {
@@ -857,7 +370,7 @@ async fn send_text(ctx: &Ctx, room: &str, text: &str, relay: &str) -> anyhow::Re
     let buf = msg.to_bytes();
     send_frame(stream, buf).await?;
     record_send(
-        ctx,
+        &ctx.device_id,
         room,
         relay,
         Kind::Text,
@@ -868,100 +381,6 @@ async fn send_text(ctx: &Ctx, room: &str, text: &str, relay: &str) -> anyhow::Re
     )
     .await;
     println!("sent text to room {}", room);
-    Ok(())
-}
-
-fn image_mimes() -> &'static [&'static str] {
-    &[
-        "image/png",
-        "image/jpeg",
-        "image/webp",
-        "image/gif",
-    ]
-}
-
-fn detect_image_mime(bytes: &[u8], file: &PathBuf) -> anyhow::Result<String> {
-    // Prefer content sniffing.
-    if let Some(kind) = infer::get(bytes) {
-        let mime = kind.mime_type();
-        if mime.starts_with("image/") {
-            return Ok(mime.to_string());
-        }
-    }
-    // Fallback: extension guess.
-    let ext = file
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let mime = match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        _ => anyhow::bail!("unsupported image type (cannot detect mime): {}", file.display()),
-    };
-    Ok(mime.to_string())
-}
-
-fn to_png(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
-    use std::io::Cursor;
-    let img = image::load_from_memory(bytes).context("decode image")?;
-    let mut out = Vec::new();
-    img.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
-        .context("encode png")?;
-    Ok(out)
-}
-
-async fn send_image(
-    ctx: &Ctx,
-    room: &str,
-    file: &PathBuf,
-    relay: &str,
-    max_bytes: usize,
-    image_mode: ImageMode,
-) -> anyhow::Result<()> {
-    let bytes = tokio::fs::read(file).await.context("read image")?;
-    if bytes.len() > max_bytes {
-        anyhow::bail!("image too large: {} bytes > {}", bytes.len(), max_bytes);
-    }
-    let mime = detect_image_mime(&bytes, file)?;
-    if !image_mimes().iter().any(|m| *m == mime) {
-        anyhow::bail!("unsupported image mime {}", mime);
-    }
-
-    let (send_mime, send_bytes) = match image_mode {
-        ImageMode::Passthrough | ImageMode::MultiMime | ImageMode::SpoofPng => (mime.as_str(), bytes),
-        ImageMode::ForcePng => ("image/png", to_png(&bytes)?),
-    };
-    let stream = connect(relay).await?;
-    let mut msg = Message::new_image(&ctx.device_id, room, send_mime, send_bytes);
-    let sha = sha256_hex(msg.payload.as_deref().unwrap_or_default());
-    msg.sha256 = Some(sha.clone());
-    let buf = msg.to_bytes();
-    send_frame(stream, buf).await?;
-    record_send(
-        ctx,
-        room,
-        relay,
-        Kind::Image,
-        Some(send_mime.to_string()),
-        file.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()),
-        msg.size,
-        Some(sha),
-    )
-    .await;
-    println!("sent image to room {}", room);
-    Ok(())
-}
-
-async fn send_join(writer: &mut tokio::net::tcp::OwnedWriteHalf, device_id: &str, room: &str) -> anyhow::Result<()> {
-    let join = Message::new_join(device_id, room).to_bytes();
-    writer
-        .write_u32(join.len() as u32)
-        .await
-        .context("write join len")?;
-    writer.write_all(&join).await.context("write join")?;
     Ok(())
 }
 
@@ -1022,7 +441,7 @@ async fn wl_watch_poll(
                     writer.write_u32(buf.len() as u32).await?;
                     writer.write_all(&buf).await?;
                     record_send(
-                        ctx,
+                        &ctx.device_id,
                         room,
                         relay,
                         Kind::Text,
@@ -1070,7 +489,7 @@ async fn wl_watch_poll(
                     writer.write_u32(buf.len() as u32).await?;
                     writer.write_all(&buf).await?;
                     record_send(
-                        ctx,
+                        &ctx.device_id,
                         room,
                         relay,
                         Kind::Image,
@@ -1119,7 +538,9 @@ async fn wl_watch_poll(
                 if last_file_hash.as_deref().is_some() {
                     // keep as-is
                 }
-                if let Some(sha) = send_paths_as_file(ctx, room, relay, paths, max_file_bytes).await? {
+                if let Some(sha) =
+                    send_paths_as_file(&ctx.state_dir, &ctx.device_id, room, relay, paths, max_file_bytes).await?
+                {
                     Some(sha)
                 } else {
                     None
@@ -1128,7 +549,7 @@ async fn wl_watch_poll(
 
             if let Some(sha) = maybe_sha {
                 if last_file_hash.as_deref() != Some(&sha)
-                    && !is_suppressed(&ctx.state_dir, room, FILE_SUPPRESS_KEY, &sha).await
+                    && !is_file_suppressed(&ctx.state_dir, room, &sha).await
                 {
                     last_file_hash = Some(sha);
                 }
@@ -1386,7 +807,8 @@ async fn wl_publish_current(
         }
 
         // send (single file raw / multi or dir tar)
-        let _ = send_paths_as_file(ctx, room, relay, paths, max_file_bytes).await?;
+        let _ =
+            send_paths_as_file(&ctx.state_dir, &ctx.device_id, room, relay, paths, max_file_bytes).await?;
         return Ok(());
     }
 
@@ -1444,7 +866,7 @@ async fn wl_publish_current(
     msg.sha256 = Some(sha);
     send_frame(stream, msg.to_bytes()).await?;
     record_send(
-        ctx,
+        &ctx.device_id,
         room,
         relay,
         msg.kind,
@@ -1497,7 +919,7 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
             Kind::Text => {
                 if let Some(payload) = msg.payload.as_deref() {
                     wl_copy("text/plain;charset=utf-8", payload).await.ok();
-                    record_recv(ctx, room, relay, &msg).await;
+                    record_recv(&ctx.device_id, room, relay, &msg).await;
                     if let Some(sha) = msg.sha256.as_deref() {
                         set_suppress(&ctx.state_dir, room, "text/plain;charset=utf-8", sha, Duration::from_secs(2)).await;
                         last_applied_sha.insert("text/plain;charset=utf-8".to_string(), sha.to_string());
@@ -1507,7 +929,7 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
             }
             Kind::Image => {
                 if let Some(payload) = msg.payload.as_deref() {
-                    record_recv(ctx, room, relay, &msg).await;
+                    record_recv(&ctx.device_id, room, relay, &msg).await;
                     let mime = msg.mime.clone().unwrap_or_else(|| "image/png".to_string());
                     match image_mode {
                         ImageMode::ForcePng => {
@@ -1587,16 +1009,20 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
             }
             Kind::File => {
                 let Some(payload) = msg.payload.as_deref() else { continue; };
-                record_recv(ctx, room, relay, &msg).await;
+                record_recv(&ctx.device_id, room, relay, &msg).await;
                 let sha = msg.sha256.clone().unwrap_or_else(|| sha256_hex(payload));
-                if last_applied_sha.get(FILE_SUPPRESS_KEY).map(|s| s.as_str()) == Some(sha.as_str()) {
+                if last_applied_sha
+                    .get(FILE_SUPPRESS_KEY)
+                    .map(|s| s.as_str())
+                    == Some(sha.as_str())
+                {
                     continue;
                 }
 
                 let name = msg
                     .name
                     .clone()
-                    .unwrap_or_else(|| format!("cliprelay-{}", &sha[..8]));
+                    .unwrap_or_else(|| format!("multicliprelay-{}", &sha[..8]));
                 let safe = safe_for_filename(&name);
 
                 let dir = received_dir();
@@ -1664,7 +1090,7 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                     println!("received file -> {} ({} bytes)", out_path.display(), payload.len());
                 }
 
-                set_suppress(&ctx.state_dir, room, FILE_SUPPRESS_KEY, &sha, Duration::from_secs(2)).await;
+                set_file_suppress(&ctx.state_dir, room, &sha, Duration::from_secs(2)).await;
                 last_applied_sha.insert(FILE_SUPPRESS_KEY.to_string(), sha.clone());
             }
             Kind::Join => {}
@@ -1673,36 +1099,4 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_uri_list_ignores_comments_and_gnome_prefix() {
-        let s = b"# comment\ncopy\nfile:///tmp/a.txt\n\nfile:///tmp/b.txt\n";
-        let urls = parse_uri_list(s);
-        assert_eq!(urls.len(), 2);
-        assert_eq!(urls[0].scheme(), "file");
-    }
-
-    #[test]
-    fn tar_bundle_roundtrip_extracts() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.txt");
-        let sub = dir.path().join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
-        let b = sub.join("b.txt");
-        std::fs::write(&a, b"hello").unwrap();
-        std::fs::write(&b, b"world").unwrap();
-
-        let tar = build_tar_bundle(&vec![a.clone(), sub.clone()]).unwrap();
-        assert!(!tar.is_empty());
-
-        let out = tempfile::tempdir().unwrap();
-        unpack_tar_bytes(&tar, &out.path().to_path_buf()).unwrap();
-
-        // a.txt should exist; sub/b.txt should exist (directory preserved).
-        assert!(out.path().join("a.txt").exists());
-        assert!(out.path().join("sub").join("b.txt").exists());
-    }
-}
+// Tests live in the dedicated modules (e.g. transfer_file).

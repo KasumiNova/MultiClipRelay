@@ -9,7 +9,7 @@ use gtk4::prelude::*;
 fn main() {
     // GTK apps must run on the main thread.
     let app = gtk4::Application::builder()
-        .application_id("io.github.cliprelay.ui-gtk")
+        .application_id("io.github.kasumiknova.multicliprelay.ui-gtk")
         .build();
 
     // Single-instance safety net:

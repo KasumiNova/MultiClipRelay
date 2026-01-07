@@ -28,11 +28,18 @@ struct HistoryEvent {
 }
 
 pub fn history_path() -> PathBuf {
-    // Match node default_data_dir(): $XDG_DATA_HOME/cliprelay or ~/.local/share/cliprelay
+    // Match node default_data_dir():
+    // - $XDG_DATA_HOME/multicliprelay (or ~/.local/share/multicliprelay)
     let base = dirs::data_dir().or_else(|| dirs::home_dir().map(|h| h.join(".local/share")));
     match base {
-        Some(d) => d.join("cliprelay").join("history.jsonl"),
-        None => PathBuf::from("/tmp").join("cliprelay").join("history.jsonl"),
+        Some(d) => {
+            d.join("multicliprelay").join("history.jsonl")
+        }
+        None => {
+            PathBuf::from("/tmp")
+                .join("multicliprelay")
+                .join("history.jsonl")
+        }
     }
 }
 

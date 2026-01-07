@@ -65,18 +65,18 @@ pub fn find_sibling_binary(name: &str) -> Option<PathBuf> {
 
 pub fn spawn_relay(log_tx: &mpsc::Sender<String>) -> anyhow::Result<Child> {
     // Prefer sibling binary; fallback to PATH.
-    let relay_bin = find_sibling_binary("cliprelay-relay")
+    let relay_bin = find_sibling_binary("multicliprelay-relay")
         .or_else(|| find_sibling_binary("relay"))
-        .unwrap_or_else(|| PathBuf::from("cliprelay-relay"));
+        .unwrap_or_else(|| PathBuf::from("multicliprelay-relay"));
     let mut cmd = Command::new(relay_bin);
     spawn_with_logs(&mut cmd, log_tx, "relay")
 }
 
 pub fn spawn_node(log_tx: &mpsc::Sender<String>, args: &[&str]) -> anyhow::Result<Child> {
     // Prefer sibling binary; fallback to PATH.
-    let node_bin = find_sibling_binary("cliprelay-node")
+    let node_bin = find_sibling_binary("multicliprelay-node")
         .or_else(|| find_sibling_binary("node"))
-        .unwrap_or_else(|| PathBuf::from("cliprelay-node"));
+        .unwrap_or_else(|| PathBuf::from("multicliprelay-node"));
     let mut cmd = Command::new(node_bin);
     cmd.args(args);
     spawn_with_logs(&mut cmd, log_tx, "node")

@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
         let dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp"));
-        let lock_path = dir.join("cliprelay-ui-tray.lock");
+        let lock_path = dir.join("multicliprelay-ui-tray.lock");
         let file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -38,7 +38,7 @@ fn main() -> anyhow::Result<()> {
     // - GNOME may require an extension to show AppIndicators.
 
     let cfg = crate::config::load_config().unwrap_or_default();
-    let tray = crate::tray_app::ClipRelayTray::new(cfg);
+    let tray = crate::tray_app::MultiClipRelayTray::new(cfg);
     let service = ksni::TrayService::new(tray);
 
     // Periodic refresh:

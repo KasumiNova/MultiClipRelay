@@ -3,12 +3,12 @@
 # This is a template PKGBUILD for Arch Linux / AUR.
 # Update `url` and `source` to match your repository.
 
-pkgname=cliprelay
+pkgname=multicliprelay
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Wayland clipboard sync via TCP relay (relay/node/ui-gtk/ui-tray)"
 arch=(x86_64)
-url="https://example.invalid/cliprelay"
+url="https://example.invalid/multicliprelay"
 license=(MIT)
 depends=(wl-clipboard gtk4)
 makedepends=(rust cargo)
@@ -18,31 +18,31 @@ makedepends=(rust cargo)
 # sha256sums=('SKIP')
 
 # Option B: build from a release tarball (if you publish one)
-# source=("${url}/releases/download/v${pkgver}/cliprelay-${pkgver}-x86_64-linux.tar.gz")
+# source=("${url}/releases/download/v${pkgver}/multicliprelay-${pkgver}-x86_64-linux.tar.gz")
 # sha256sums=('SKIP')
 
 source=("git+${url}.git")
 sha256sums=('SKIP')
 
 build() {
-  cd "${srcdir}/cliprelay" || cd "${srcdir}/${pkgname}"
+  cd "${srcdir}/multicliprelay" || cd "${srcdir}/MultiClipRelay" || cd "${srcdir}/${pkgname}"
   cargo build --release -p relay -p node -p ui-gtk -p ui-tray
 }
 
 package() {
-  cd "${srcdir}/cliprelay" || cd "${srcdir}/${pkgname}"
+  cd "${srcdir}/multicliprelay" || cd "${srcdir}/MultiClipRelay" || cd "${srcdir}/${pkgname}"
 
-  install -Dm755 target/release/relay   "${pkgdir}/usr/bin/cliprelay-relay"
-  install -Dm755 target/release/node    "${pkgdir}/usr/bin/cliprelay-node"
-  install -Dm755 target/release/ui-gtk  "${pkgdir}/usr/bin/cliprelay-ui-gtk"
-  install -Dm755 target/release/ui-tray "${pkgdir}/usr/bin/cliprelay-ui-tray"
+  install -Dm755 target/release/relay   "${pkgdir}/usr/bin/multicliprelay-relay"
+  install -Dm755 target/release/node    "${pkgdir}/usr/bin/multicliprelay-node"
+  install -Dm755 target/release/ui-gtk  "${pkgdir}/usr/bin/multicliprelay-ui-gtk"
+  install -Dm755 target/release/ui-tray "${pkgdir}/usr/bin/multicliprelay-ui-tray"
 
-  install -Dm644 packaging/common/cliprelay-ui-gtk.desktop  "${pkgdir}/usr/share/applications/cliprelay-ui-gtk.desktop"
-  install -Dm644 packaging/common/cliprelay-ui-tray.desktop "${pkgdir}/usr/share/applications/cliprelay-ui-tray.desktop"
+  install -Dm644 packaging/common/multicliprelay-ui-gtk.desktop  "${pkgdir}/usr/share/applications/multicliprelay-ui-gtk.desktop"
+  install -Dm644 packaging/common/multicliprelay-ui-tray.desktop "${pkgdir}/usr/share/applications/multicliprelay-ui-tray.desktop"
 
-  install -Dm644 packaging/common/systemd/cliprelay-relay.service    "${pkgdir}/usr/lib/systemd/user/cliprelay-relay.service"
-  install -Dm644 packaging/common/systemd/cliprelay-wl-watch.service "${pkgdir}/usr/lib/systemd/user/cliprelay-wl-watch.service"
-  install -Dm644 packaging/common/systemd/cliprelay-wl-apply.service "${pkgdir}/usr/lib/systemd/user/cliprelay-wl-apply.service"
+  install -Dm644 packaging/common/systemd/multicliprelay-relay.service    "${pkgdir}/usr/lib/systemd/user/multicliprelay-relay.service"
+  install -Dm644 packaging/common/systemd/multicliprelay-wl-watch.service "${pkgdir}/usr/lib/systemd/user/multicliprelay-wl-watch.service"
+  install -Dm644 packaging/common/systemd/multicliprelay-wl-apply.service "${pkgdir}/usr/lib/systemd/user/multicliprelay-wl-apply.service"
 
   install -Dm644 packaging/common/ui.toml.example "${pkgdir}/usr/share/doc/${pkgname}/ui.toml.example"
 }

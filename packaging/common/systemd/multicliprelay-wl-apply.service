@@ -1,0 +1,21 @@
+[Unit]
+Description=MultiClipRelay Wayland clipboard apply
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/multicliprelay/multicliprelay.env
+
+# Defaults (can be overridden by EnvironmentFile)
+Environment=MULTICLIPRELAY_RELAY=127.0.0.1:8080
+Environment=MULTICLIPRELAY_ROOM=default
+Environment=MULTICLIPRELAY_IMAGE_MODE=force-png
+
+ExecStart=multicliprelay-node wl-apply \
+	--room ${MULTICLIPRELAY_ROOM} \
+	--relay ${MULTICLIPRELAY_RELAY} \
+	--image-mode ${MULTICLIPRELAY_IMAGE_MODE}
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=default.target

@@ -76,8 +76,8 @@ pub fn t(lang: Lang, k: K) -> &'static str {
         (Lang::ZhCn, K::Quit) => "退出",
         (Lang::En, K::Quit) => "Quit",
 
-        (Lang::ZhCn, K::TooltipTitle) => "ClipRelay",
-        (Lang::En, K::TooltipTitle) => "ClipRelay",
+        (Lang::ZhCn, K::TooltipTitle) => "MultiClipRelay",
+        (Lang::En, K::TooltipTitle) => "MultiClipRelay",
         (Lang::ZhCn, K::TooltipStatusLine) => "状态",
         (Lang::En, K::TooltipStatusLine) => "Status",
         (Lang::ZhCn, K::TooltipHint) => "提示：GNOME 可能需要 AppIndicator 扩展才能显示托盘。",

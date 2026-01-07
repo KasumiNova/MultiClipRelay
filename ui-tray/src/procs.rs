@@ -55,11 +55,11 @@ pub fn find_sibling_binary(name: &str) -> Option<PathBuf> {
 
 pub fn spawn_ui_gtk() -> anyhow::Result<()> {
     // Prefer a sibling binary (when running from target/debug), fallback to PATH.
-    let ui = find_sibling_binary("cliprelay-ui-gtk")
+    let ui = find_sibling_binary("multicliprelay-ui-gtk")
         .or_else(|| find_sibling_binary("ui-gtk"))
-        .or_else(|| which::which("cliprelay-ui-gtk").ok())
+        .or_else(|| which::which("multicliprelay-ui-gtk").ok())
         .or_else(|| which::which("ui-gtk").ok())
-        .unwrap_or_else(|| PathBuf::from("cliprelay-ui-gtk"));
+        .unwrap_or_else(|| PathBuf::from("multicliprelay-ui-gtk"));
 
     Command::new(ui).spawn()?;
     Ok(())

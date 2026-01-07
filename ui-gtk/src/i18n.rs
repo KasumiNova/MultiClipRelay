@@ -87,8 +87,8 @@ pub fn parse_lang_id(id: &str) -> Option<Lang> {
 
 pub fn t(lang: Lang, k: K) -> &'static str {
     match (lang, k) {
-        (Lang::ZhCn, K::WindowTitle) => "ClipRelay（控制面板）",
-        (Lang::En, K::WindowTitle) => "ClipRelay (Control Panel)",
+        (Lang::ZhCn, K::WindowTitle) => "MultiClipRelay（控制面板）",
+        (Lang::En, K::WindowTitle) => "MultiClipRelay (Control Panel)",
 
         (Lang::ZhCn, K::TabControl) => "控制",
         (Lang::En, K::TabControl) => "Control",

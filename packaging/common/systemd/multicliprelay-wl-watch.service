@@ -1,0 +1,31 @@
+[Unit]
+Description=MultiClipRelay Wayland clipboard watch
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/multicliprelay/multicliprelay.env
+
+# Defaults (can be overridden by EnvironmentFile)
+Environment=MULTICLIPRELAY_RELAY=127.0.0.1:8080
+Environment=MULTICLIPRELAY_ROOM=default
+Environment=MULTICLIPRELAY_MAX_TEXT_BYTES=1048576
+Environment=MULTICLIPRELAY_MAX_IMAGE_BYTES=20971520
+Environment=MULTICLIPRELAY_MAX_FILE_BYTES=20971520
+Environment=MULTICLIPRELAY_IMAGE_MODE=force-png
+Environment=MULTICLIPRELAY_WATCH_MODE=watch
+Environment=MULTICLIPRELAY_POLL_INTERVAL_MS=200
+
+ExecStart=multicliprelay-node wl-watch \
+	--room ${MULTICLIPRELAY_ROOM} \
+	--relay ${MULTICLIPRELAY_RELAY} \
+	--mode ${MULTICLIPRELAY_WATCH_MODE} \
+	--interval-ms ${MULTICLIPRELAY_POLL_INTERVAL_MS} \
+	--max-text-bytes ${MULTICLIPRELAY_MAX_TEXT_BYTES} \
+	--max-image-bytes ${MULTICLIPRELAY_MAX_IMAGE_BYTES} \
+	--max-file-bytes ${MULTICLIPRELAY_MAX_FILE_BYTES} \
+	--image-mode ${MULTICLIPRELAY_IMAGE_MODE}
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=default.target

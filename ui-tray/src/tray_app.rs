@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-pub struct ClipRelayTray {
+pub struct MultiClipRelayTray {
     state: Arc<Mutex<AppState>>,
 }
 
-impl ClipRelayTray {
+impl MultiClipRelayTray {
     pub fn new(cfg: UiConfig) -> Self {
         Self {
             state: Arc::new(Mutex::new(AppState::new(cfg))),
@@ -63,11 +63,11 @@ impl ClipRelayTray {
             return;
         }
 
-        let relay_bin = find_sibling_binary("cliprelay-relay")
+        let relay_bin = find_sibling_binary("multicliprelay-relay")
             .or_else(|| find_sibling_binary("relay"))
-            .or_else(|| which::which("cliprelay-relay").ok())
+            .or_else(|| which::which("multicliprelay-relay").ok())
             .or_else(|| which::which("relay").ok())
-            .unwrap_or_else(|| PathBuf::from("cliprelay-relay"));
+            .unwrap_or_else(|| PathBuf::from("multicliprelay-relay"));
 
         let mut cmd = Command::new(relay_bin);
         cmd.stdin(Stdio::null())
@@ -103,11 +103,11 @@ impl ClipRelayTray {
             return;
         }
 
-        let node_bin = find_sibling_binary("cliprelay-node")
+        let node_bin = find_sibling_binary("multicliprelay-node")
             .or_else(|| find_sibling_binary("node"))
-            .or_else(|| which::which("cliprelay-node").ok())
+            .or_else(|| which::which("multicliprelay-node").ok())
             .or_else(|| which::which("node").ok())
-            .unwrap_or_else(|| PathBuf::from("cliprelay-node"));
+            .unwrap_or_else(|| PathBuf::from("multicliprelay-node"));
 
         let mut cmd = Command::new(node_bin);
         cmd.arg("wl-watch")
@@ -157,11 +157,11 @@ impl ClipRelayTray {
             return;
         }
 
-        let node_bin = find_sibling_binary("cliprelay-node")
+        let node_bin = find_sibling_binary("multicliprelay-node")
             .or_else(|| find_sibling_binary("node"))
-            .or_else(|| which::which("cliprelay-node").ok())
+            .or_else(|| which::which("multicliprelay-node").ok())
             .or_else(|| which::which("node").ok())
-            .unwrap_or_else(|| PathBuf::from("cliprelay-node"));
+            .unwrap_or_else(|| PathBuf::from("multicliprelay-node"));
 
         let mut cmd = Command::new(node_bin);
         cmd.arg("wl-apply")
@@ -243,22 +243,22 @@ impl AppState {
     }
 }
 
-impl Tray for ClipRelayTray {
+impl Tray for MultiClipRelayTray {
     fn icon_name(&self) -> String {
         "edit-paste".to_string()
     }
 
     fn title(&self) -> String {
-        "ClipRelay".to_string()
+        "MultiClipRelay".to_string()
     }
 
     fn id(&self) -> String {
-        "cliprelay".to_string()
+        "multicliprelay".to_string()
     }
 
     fn status(&self) -> Status {
         // Important: many SNI hosts (e.g. waybar) hide items with `Passive` status.
-        // Users expect the tray icon to be visible even when ClipRelay is idle.
+        // Users expect the tray icon to be visible even when MultiClipRelay is idle.
         Status::Active
     }
 
@@ -400,7 +400,7 @@ impl Tray for ClipRelayTray {
     }
 }
 
-pub fn spawn_refresh_thread(handle: Handle<ClipRelayTray>) {
+pub fn spawn_refresh_thread(handle: Handle<MultiClipRelayTray>) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_millis(600));
         let _ = handle.update(|tray| {

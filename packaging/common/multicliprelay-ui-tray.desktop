@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=ClipRelay Control Panel
-Exec=cliprelay-ui-gtk
+Name=MultiClipRelay Tray
+Exec=multicliprelay-ui-tray
 Terminal=false
 Categories=Utility;
 Icon=edit-paste

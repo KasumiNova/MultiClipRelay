@@ -47,7 +47,7 @@ pub fn connect_diagnostics_handlers(
     w.send_test_text.connect_clicked(clone!(@strong log_tx, @weak relay_entry, @weak room_entry => move |_| {
         let relay = relay_entry.text().to_string();
         let room = room_entry.text().to_string();
-        let text = format!("cliprelay test @{}", chrono_like_timestamp());
+        let text = format!("multicliprelay test @{}", chrono_like_timestamp());
         // Important: `node wl-apply` intentionally ignores messages whose `device_id` equals the
         // local device id. For local end-to-end testing, we pretend this message comes from a
         // different device by overriding --device-id.

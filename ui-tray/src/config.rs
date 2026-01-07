@@ -67,7 +67,7 @@ impl UiConfig {
 
 pub fn config_path() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
-    base.join("cliprelay").join("ui.toml")
+    base.join("multicliprelay").join("ui.toml")
 }
 
 pub fn load_config() -> anyhow::Result<UiConfig> {

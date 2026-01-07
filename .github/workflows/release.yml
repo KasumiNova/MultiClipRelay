@@ -34,13 +34,27 @@ jobs:
           set -euo pipefail
           ver="${GITHUB_REF_NAME#v}"
           outdir="dist/release"
-          pkg="cliprelay-${ver}-x86_64-linux"
+          pkg="multicliprelay-${ver}-x86_64-linux"
           rm -rf "$outdir" && mkdir -p "$outdir/$pkg"
-          install -m 0755 target/release/relay   "$outdir/$pkg/relay"
-          install -m 0755 target/release/node    "$outdir/$pkg/node"
-          install -m 0755 target/release/ui-gtk  "$outdir/$pkg/ui-gtk"
-          install -m 0755 target/release/ui-tray "$outdir/$pkg/ui-tray"
-          cp -r packaging "$outdir/$pkg/packaging"
+          install -m 0755 target/release/relay   "$outdir/$pkg/multicliprelay-relay"
+          install -m 0755 target/release/node    "$outdir/$pkg/multicliprelay-node"
+          install -m 0755 target/release/ui-gtk  "$outdir/$pkg/multicliprelay-ui-gtk"
+          install -m 0755 target/release/ui-tray "$outdir/$pkg/multicliprelay-ui-tray"
+          # Ship packaging assets, but only the MultiClipRelay ones.
+          mkdir -p \
+            "$outdir/$pkg/packaging/common/systemd" \
+            "$outdir/$pkg/packaging/deb" \
+            "$outdir/$pkg/packaging/arch"
+          cp packaging/README.md "$outdir/$pkg/packaging/README.md"
+          cp packaging/deb/build_deb.sh "$outdir/$pkg/packaging/deb/build_deb.sh"
+          cp packaging/arch/PKGBUILD "$outdir/$pkg/packaging/arch/PKGBUILD"
+          cp packaging/common/multicliprelay-ui-gtk.desktop  "$outdir/$pkg/packaging/common/multicliprelay-ui-gtk.desktop"
+          cp packaging/common/multicliprelay-ui-tray.desktop "$outdir/$pkg/packaging/common/multicliprelay-ui-tray.desktop"
+          cp packaging/common/ui.toml.example "$outdir/$pkg/packaging/common/ui.toml.example"
+          cp packaging/common/systemd/multicliprelay-relay.service    "$outdir/$pkg/packaging/common/systemd/multicliprelay-relay.service"
+          cp packaging/common/systemd/multicliprelay-wl-watch.service "$outdir/$pkg/packaging/common/systemd/multicliprelay-wl-watch.service"
+          cp packaging/common/systemd/multicliprelay-wl-apply.service "$outdir/$pkg/packaging/common/systemd/multicliprelay-wl-apply.service"
+          cp packaging/common/systemd/multicliprelay.env.example "$outdir/$pkg/packaging/common/systemd/multicliprelay.env.example"
           cp README.md "$outdir/$pkg/README.md"
           (cd "$outdir" && tar -czf "${pkg}.tar.gz" "$pkg")
           echo "path=$outdir/${pkg}.tar.gz" >> "$GITHUB_OUTPUT"
@@ -53,7 +67,7 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           chmod +x packaging/deb/build_deb.sh
           packaging/deb/build_deb.sh "$ver"
-          echo "path=dist/deb/cliprelay_${ver}_amd64.deb" >> "$GITHUB_OUTPUT"
+          echo "path=dist/deb/multicliprelay_${ver}_amd64.deb" >> "$GITHUB_OUTPUT"
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
