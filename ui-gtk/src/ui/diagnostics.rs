@@ -5,7 +5,7 @@ use std::process::Command;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
-use crate::i18n::{t, K, Lang};
+use crate::i18n::{t, Lang, K};
 use crate::procs::spawn_node;
 use crate::util::{chrono_like_timestamp, fake_remote_device_id, normalize_relay_addr_for_connect};
 
@@ -44,40 +44,42 @@ pub fn connect_diagnostics_handlers(
         image_mode_combo,
     } = inputs;
 
-    w.send_test_text.connect_clicked(clone!(@strong log_tx, @weak relay_entry, @weak room_entry => move |_| {
-        let relay_raw = relay_entry.text().to_string();
-        let relay = normalize_relay_addr_for_connect(&relay_raw);
-        let room = room_entry.text().to_string();
-        let text = format!("multicliprelay test @{}", chrono_like_timestamp());
-        // Important: `node wl-apply` intentionally ignores messages whose `device_id` equals the
-        // local device id. For local end-to-end testing, we pretend this message comes from a
-        // different device by overriding --device-id.
-        let dev = fake_remote_device_id();
-        let args_owned: Vec<String> = vec![
-            "--device-id".to_string(),
-            dev.clone(),
-            "send-text".to_string(),
-            "--room".to_string(),
-            room,
-            "--relay".to_string(),
-            relay,
-            "--text".to_string(),
-            text,
-        ];
-        let args: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
-        match spawn_node(&log_tx, &args) {
-            Ok(mut child) => {
-                // fire-and-forget: wait in a thread
-                thread::spawn(move || {
-                    let _ = child.wait();
-                });
-                let _ = log_tx.send(format!("sent test text (as device_id={})", dev));
+    w.send_test_text.connect_clicked(
+        clone!(@strong log_tx, @weak relay_entry, @weak room_entry => move |_| {
+            let relay_raw = relay_entry.text().to_string();
+            let relay = normalize_relay_addr_for_connect(&relay_raw);
+            let room = room_entry.text().to_string();
+            let text = format!("multicliprelay test @{}", chrono_like_timestamp());
+            // Important: `node wl-apply` intentionally ignores messages whose `device_id` equals the
+            // local device id. For local end-to-end testing, we pretend this message comes from a
+            // different device by overriding --device-id.
+            let dev = fake_remote_device_id();
+            let args_owned: Vec<String> = vec![
+                "--device-id".to_string(),
+                dev.clone(),
+                "send-text".to_string(),
+                "--room".to_string(),
+                room,
+                "--relay".to_string(),
+                relay,
+                "--text".to_string(),
+                text,
+            ];
+            let args: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
+            match spawn_node(&log_tx, &args) {
+                Ok(mut child) => {
+                    // fire-and-forget: wait in a thread
+                    thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                    let _ = log_tx.send(format!("sent test text (as device_id={})", dev));
+                }
+                Err(e) => {
+                    let _ = log_tx.send(format!("failed to send test text: {e:?}"));
+                }
             }
-            Err(e) => {
-                let _ = log_tx.send(format!("failed to send test text: {e:?}"));
-            }
-        }
-    }));
+        }),
+    );
 
     w.send_test_image.connect_clicked(clone!(@strong log_tx, @strong lang_state, @weak window, @weak relay_entry, @weak room_entry, @weak max_image_spin, @weak image_mode_combo => move |_| {
         // Determine current UI language at click time.

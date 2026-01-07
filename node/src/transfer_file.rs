@@ -102,11 +102,37 @@ pub fn build_uri_list(paths: &[PathBuf]) -> String {
     let mut out = String::new();
     for p in paths {
         if let Ok(u) = Url::from_file_path(p) {
-            out.push_str(u.as_str());
-            out.push('\n');
+            // Many file managers expect directory URIs to end with '/'.
+            // `Url::from_file_path` does not guarantee that.
+            let mut s = u.as_str().to_string();
+            if p.is_dir() && !s.ends_with('/') {
+                s.push('/');
+            }
+            // RFC 2483 / text/uri-list commonly uses CRLF line endings; some consumers are picky.
+            out.push_str(&s);
+            out.push_str("\r\n");
         }
     }
     out
+}
+
+/// List top-level items under `dir` (both files and directories), sorted.
+///
+/// This is preferred over listing all files recursively when we want to preserve
+/// "copy folder" semantics across machines.
+pub fn list_top_level_items(dir: &PathBuf, max_items: usize) -> Vec<PathBuf> {
+    let mut items: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    items.sort();
+    if items.len() > max_items {
+        items.truncate(max_items);
+    }
+    items
 }
 
 pub fn list_files_recursively(dir: &PathBuf, max_items: usize) -> Vec<PathBuf> {
@@ -289,5 +315,19 @@ mod tests {
         assert!(out.path().join("a.txt").exists());
         assert!(out.path().join("sub").join("b.txt").exists());
     }
-}
 
+    #[test]
+    fn build_uri_list_uses_file_scheme_and_crlf() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a b.txt");
+        std::fs::write(&p, b"x").unwrap();
+
+        let s = build_uri_list(&vec![p]);
+        assert!(s.starts_with("file:///"), "uri list should start with file:/// but got: {s:?}");
+        assert!(s.ends_with("\r\n"), "uri list should end with CRLF but got: {s:?}");
+        assert!(
+            !s.contains("file:////"),
+            "uri list must not contain file://// (too many slashes): {s:?}"
+        );
+    }
+}

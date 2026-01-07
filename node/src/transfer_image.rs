@@ -65,7 +65,9 @@ pub async fn send_image(
     }
 
     let (send_mime, send_bytes) = match image_mode {
-        ImageMode::Passthrough | ImageMode::MultiMime | ImageMode::SpoofPng => (mime.as_str(), bytes),
+        ImageMode::Passthrough | ImageMode::MultiMime | ImageMode::SpoofPng => {
+            (mime.as_str(), bytes)
+        }
         ImageMode::ForcePng => ("image/png", to_png(&bytes)?),
     };
 
@@ -82,7 +84,9 @@ pub async fn send_image(
         relay,
         Kind::Image,
         Some(send_mime.to_string()),
-        file.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()),
+        file.file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string()),
         msg.size,
         Some(sha),
     )

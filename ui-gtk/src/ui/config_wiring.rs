@@ -38,10 +38,7 @@ pub struct ConfigWiringCtx {
     pub suppress_mode_combo: Rc<Cell<bool>>,
 }
 
-pub fn make_save_cfg(
-    cfg_path: PathBuf,
-    ui: ConfigWidgets,
-) -> Rc<dyn Fn()> {
+pub fn make_save_cfg(cfg_path: PathBuf, ui: ConfigWidgets) -> Rc<dyn Fn()> {
     Rc::new(move || {
         let image_mode = ui
             .image_mode_combo
@@ -69,9 +66,7 @@ pub fn make_save_cfg(
     })
 }
 
-pub fn connect_config_wiring(
-    ctx: ConfigWiringCtx,
-) {
+pub fn connect_config_wiring(ctx: ConfigWiringCtx) {
     let ConfigWiringCtx {
         cfg_path,
         log_tx,
@@ -99,37 +94,47 @@ pub fn connect_config_wiring(
     } = ui;
 
     // Save config on change (simple + good enough)
-    relay_entry.connect_changed(clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
-        if suppress_save_cfg.get() {
-            return;
-        }
-        (save_cfg)();
-    }));
-    room_entry.connect_changed(clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
-        if suppress_save_cfg.get() {
-            return;
-        }
-        (save_cfg)();
-    }));
-    max_text_spin.connect_value_changed(clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
-        if suppress_save_cfg.get() {
-            return;
-        }
-        (save_cfg)();
-    }));
-    max_image_spin.connect_value_changed(clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
-        if suppress_save_cfg.get() {
-            return;
-        }
-        (save_cfg)();
-    }));
+    relay_entry.connect_changed(
+        clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
+            if suppress_save_cfg.get() {
+                return;
+            }
+            (save_cfg)();
+        }),
+    );
+    room_entry.connect_changed(
+        clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
+            if suppress_save_cfg.get() {
+                return;
+            }
+            (save_cfg)();
+        }),
+    );
+    max_text_spin.connect_value_changed(
+        clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
+            if suppress_save_cfg.get() {
+                return;
+            }
+            (save_cfg)();
+        }),
+    );
+    max_image_spin.connect_value_changed(
+        clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
+            if suppress_save_cfg.get() {
+                return;
+            }
+            (save_cfg)();
+        }),
+    );
 
-    max_file_spin.connect_value_changed(clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
-        if suppress_save_cfg.get() {
-            return;
-        }
-        (save_cfg)();
-    }));
+    max_file_spin.connect_value_changed(
+        clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
+            if suppress_save_cfg.get() {
+                return;
+            }
+            (save_cfg)();
+        }),
+    );
 
     image_mode_combo.connect_changed(clone!(@strong save_cfg, @strong lang_state, @weak mode_hint, @weak image_mode_combo, @strong suppress_mode_combo, @strong suppress_save_cfg => move |_| {
         if suppress_mode_combo.get() || suppress_save_cfg.get() {

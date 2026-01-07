@@ -5,8 +5,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 
-use utils::Message;
 use utils::Kind;
+use utils::Message;
 
 type Tx = mpsc::Sender<Vec<u8>>;
 type ConnId = u64;
@@ -23,7 +23,9 @@ async fn main() -> anyhow::Result<()> {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--bind" | "--addr" => {
-                addr = args.next().ok_or_else(|| anyhow::anyhow!("missing value for {a}"))?;
+                addr = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("missing value for {a}"))?;
             }
             "-h" | "--help" => {
                 println!("Usage: relay [--bind <ip:port>]\n\nEnv: RELAY_ADDR=<ip:port>");
@@ -82,7 +84,9 @@ async fn handle_conn(socket: TcpStream, rooms: SharedRooms) -> anyhow::Result<()
         if registered_room.is_none() {
             let r = msg.room.clone();
             let mut map = rooms.lock().await;
-            map.entry(r.clone()).or_default().push((conn_id, tx.clone()));
+            map.entry(r.clone())
+                .or_default()
+                .push((conn_id, tx.clone()));
             registered_room = Some(r);
         }
 

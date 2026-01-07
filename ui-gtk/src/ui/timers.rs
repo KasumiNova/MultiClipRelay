@@ -61,7 +61,11 @@ pub fn install_prune_timer(
     );
 }
 
-pub fn install_close_handler(window: &gtk4::ApplicationWindow, procs: Arc<Mutex<Procs>>, log_tx: mpsc::Sender<String>) {
+pub fn install_close_handler(
+    window: &gtk4::ApplicationWindow,
+    procs: Arc<Mutex<Procs>>,
+    log_tx: mpsc::Sender<String>,
+) {
     window.connect_close_request(clone!(@strong procs, @strong log_tx => @default-return glib::Propagation::Proceed, move |_| {
         let mut p = procs.lock().unwrap();
         // Don't block the UI thread: terminate in background.

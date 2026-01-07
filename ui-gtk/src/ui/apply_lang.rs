@@ -3,9 +3,11 @@ use gtk4::prelude::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::i18n::{help_text, image_mode_hint_text, populate_image_mode_combo, t, K, Lang};
+use crate::i18n::{help_text, image_mode_hint_text, populate_image_mode_combo, t, Lang, K};
 
-use super::constants::{DEFAULT_IMAGE_MODE_ID, LANG_AUTO_ID, PAGE_CONTROL, PAGE_HELP, PAGE_HISTORY, PAGE_LOGS};
+use super::constants::{
+    DEFAULT_IMAGE_MODE_ID, LANG_AUTO_ID, PAGE_CONTROL, PAGE_HELP, PAGE_HISTORY, PAGE_LOGS,
+};
 
 #[derive(Clone)]
 pub struct ApplyLangCtx {
@@ -114,8 +116,10 @@ pub fn make_apply_lang(ctx: ApplyLangCtx) -> Rc<dyn Fn(Lang)> {
             .map(|s| s.to_string())
             .unwrap_or_else(|| LANG_AUTO_ID.to_string());
         ctx.language_combo.remove_all();
-        ctx.language_combo.append(Some(LANG_AUTO_ID), t(lang, K::LangAuto));
-        ctx.language_combo.append(Some("zh-cn"), t(lang, K::LangZhCn));
+        ctx.language_combo
+            .append(Some(LANG_AUTO_ID), t(lang, K::LangAuto));
+        ctx.language_combo
+            .append(Some("zh-cn"), t(lang, K::LangZhCn));
         ctx.language_combo.append(Some("en"), t(lang, K::LangEn));
         ctx.language_combo.set_active_id(Some(&active_lang));
         ctx.suppress_lang_combo.set(false);

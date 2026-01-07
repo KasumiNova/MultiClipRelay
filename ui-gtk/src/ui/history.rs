@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use crate::i18n::{t, K, Lang};
+use crate::i18n::{t, Lang, K};
 
 #[derive(Debug, Clone, Deserialize)]
 struct HistoryEvent {
@@ -32,14 +32,10 @@ pub fn history_path() -> PathBuf {
     // - $XDG_DATA_HOME/multicliprelay (or ~/.local/share/multicliprelay)
     let base = dirs::data_dir().or_else(|| dirs::home_dir().map(|h| h.join(".local/share")));
     match base {
-        Some(d) => {
-            d.join("multicliprelay").join("history.jsonl")
-        }
-        None => {
-            PathBuf::from("/tmp")
-                .join("multicliprelay")
-                .join("history.jsonl")
-        }
+        Some(d) => d.join("multicliprelay").join("history.jsonl"),
+        None => PathBuf::from("/tmp")
+            .join("multicliprelay")
+            .join("history.jsonl"),
     }
 }
 

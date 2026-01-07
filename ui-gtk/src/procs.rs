@@ -88,7 +88,25 @@ pub fn spawn_node(log_tx: &mpsc::Sender<String>, args: &[&str]) -> anyhow::Resul
     spawn_with_logs(&mut cmd, log_tx, "node")
 }
 
-fn spawn_with_logs(cmd: &mut Command, log_tx: &mpsc::Sender<String>, tag: &str) -> anyhow::Result<Child> {
+fn spawn_with_logs(
+    cmd: &mut Command,
+    log_tx: &mpsc::Sender<String>,
+    tag: &str,
+) -> anyhow::Result<Child> {
+    // On Linux, if the UI process is killed abruptly (e.g. SIGKILL), child processes
+    // would normally keep running and can leave behind wl-paste watchers.
+    // PR_SET_PDEATHSIG makes the kernel deliver SIGTERM to the child when the parent dies.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
+    }
+
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().with_context(|| format!("spawn {tag}"))?;
 
@@ -101,7 +119,11 @@ fn spawn_with_logs(cmd: &mut Command, log_tx: &mpsc::Sender<String>, tag: &str) 
     Ok(child)
 }
 
-fn pipe_lines<R: std::io::Read + Send + 'static>(reader: R, log_tx: mpsc::Sender<String>, prefix: String) {
+fn pipe_lines<R: std::io::Read + Send + 'static>(
+    reader: R,
+    log_tx: mpsc::Sender<String>,
+    prefix: String,
+) {
     thread::spawn(move || {
         let br = BufReader::new(reader);
         for line in br.lines().flatten() {

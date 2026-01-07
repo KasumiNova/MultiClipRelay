@@ -72,7 +72,8 @@ pub fn config_path() -> PathBuf {
 
 pub fn load_config() -> anyhow::Result<UiConfig> {
     let path = config_path();
-    let s = std::fs::read_to_string(&path).with_context(|| format!("read config {}", path.display()))?;
+    let s = std::fs::read_to_string(&path)
+        .with_context(|| format!("read config {}", path.display()))?;
     let mut cfg: UiConfig = toml::from_str(&s).context("parse config")?;
 
     // Backward compat: old configs had `force_png = true/false`.

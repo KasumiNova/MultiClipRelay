@@ -4,7 +4,7 @@ use gtk4::prelude::*;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 
-use crate::i18n::{t, K, Lang};
+use crate::i18n::{t, Lang, K};
 use crate::procs::{spawn_node, spawn_relay, terminate_child, Procs};
 use crate::util::normalize_relay_addr_for_connect;
 
@@ -38,7 +38,11 @@ pub struct ServiceConfigInputs {
     pub image_mode_combo: gtk4::ComboBoxText,
 }
 
-pub fn make_update_services_ui(procs: Arc<Mutex<Procs>>, lang_state: Arc<Mutex<Lang>>, w: ServiceWidgets) -> Rc<dyn Fn()> {
+pub fn make_update_services_ui(
+    procs: Arc<Mutex<Procs>>,
+    lang_state: Arc<Mutex<Lang>>,
+    w: ServiceWidgets,
+) -> Rc<dyn Fn()> {
     Rc::new(move || {
         let lang = *lang_state.lock().unwrap();
         let p = procs.lock().unwrap();
@@ -48,12 +52,21 @@ pub fn make_update_services_ui(procs: Arc<Mutex<Procs>>, lang_state: Arc<Mutex<L
 
         let running_txt = t(lang, K::StatusRunning);
         let stopped_txt = t(lang, K::StatusStopped);
-        w.status_relay
-            .set_text(if relay_running { running_txt } else { stopped_txt });
-        w.status_watch
-            .set_text(if watch_running { running_txt } else { stopped_txt });
-        w.status_apply
-            .set_text(if apply_running { running_txt } else { stopped_txt });
+        w.status_relay.set_text(if relay_running {
+            running_txt
+        } else {
+            stopped_txt
+        });
+        w.status_watch.set_text(if watch_running {
+            running_txt
+        } else {
+            stopped_txt
+        });
+        w.status_apply.set_text(if apply_running {
+            running_txt
+        } else {
+            stopped_txt
+        });
 
         w.start_relay_btn.set_sensitive(!relay_running);
         w.stop_relay_btn.set_sensitive(relay_running);
@@ -108,17 +121,19 @@ pub fn connect_service_handlers(
         update_services_ui();
     }));
 
-    w.stop_relay_btn.connect_clicked(clone!(@strong procs, @strong log_tx, @strong update_services_ui => move |_| {
-        let mut p = procs.lock().unwrap();
-        if let Some(child) = p.relay.take() {
-            terminate_child(child, "relay", log_tx.clone());
-            let _ = log_tx.send("stopping relay".into());
-        } else {
-            let _ = log_tx.send("relay not running".into());
-        }
-        drop(p);
-        update_services_ui();
-    }));
+    w.stop_relay_btn.connect_clicked(
+        clone!(@strong procs, @strong log_tx, @strong update_services_ui => move |_| {
+            let mut p = procs.lock().unwrap();
+            if let Some(child) = p.relay.take() {
+                terminate_child(child, "relay", log_tx.clone());
+                let _ = log_tx.send("stopping relay".into());
+            } else {
+                let _ = log_tx.send("relay not running".into());
+            }
+            drop(p);
+            update_services_ui();
+        }),
+    );
 
     // Watch
     w.start_watch_btn.connect_clicked(clone!(@strong procs, @strong log_tx, @weak relay_entry, @weak room_entry, @weak max_text_spin, @weak max_image_spin, @weak max_file_spin, @weak image_mode_combo, @strong update_services_ui => move |_| {
@@ -168,17 +183,19 @@ pub fn connect_service_handlers(
         update_services_ui();
     }));
 
-    w.stop_watch_btn.connect_clicked(clone!(@strong procs, @strong log_tx, @strong update_services_ui => move |_| {
-        let mut p = procs.lock().unwrap();
-        if let Some(child) = p.watch.take() {
-            terminate_child(child, "node wl-watch", log_tx.clone());
-            let _ = log_tx.send("stopping wl-watch".into());
-        } else {
-            let _ = log_tx.send("wl-watch not running".into());
-        }
-        drop(p);
-        update_services_ui();
-    }));
+    w.stop_watch_btn.connect_clicked(
+        clone!(@strong procs, @strong log_tx, @strong update_services_ui => move |_| {
+            let mut p = procs.lock().unwrap();
+            if let Some(child) = p.watch.take() {
+                terminate_child(child, "node wl-watch", log_tx.clone());
+                let _ = log_tx.send("stopping wl-watch".into());
+            } else {
+                let _ = log_tx.send("wl-watch not running".into());
+            }
+            drop(p);
+            update_services_ui();
+        }),
+    );
 
     // Apply
     w.start_apply_btn.connect_clicked(clone!(@strong procs, @strong log_tx, @weak relay_entry, @weak room_entry, @weak image_mode_combo, @strong update_services_ui => move |_| {
@@ -217,17 +234,19 @@ pub fn connect_service_handlers(
         update_services_ui();
     }));
 
-    w.stop_apply_btn.connect_clicked(clone!(@strong procs, @strong log_tx, @strong update_services_ui => move |_| {
-        let mut p = procs.lock().unwrap();
-        if let Some(child) = p.apply.take() {
-            terminate_child(child, "node wl-apply", log_tx.clone());
-            let _ = log_tx.send("stopping wl-apply".into());
-        } else {
-            let _ = log_tx.send("wl-apply not running".into());
-        }
-        drop(p);
-        update_services_ui();
-    }));
+    w.stop_apply_btn.connect_clicked(
+        clone!(@strong procs, @strong log_tx, @strong update_services_ui => move |_| {
+            let mut p = procs.lock().unwrap();
+            if let Some(child) = p.apply.take() {
+                terminate_child(child, "node wl-apply", log_tx.clone());
+                let _ = log_tx.send("stopping wl-apply".into());
+            } else {
+                let _ = log_tx.send("wl-apply not running".into());
+            }
+            drop(p);
+            update_services_ui();
+        }),
+    );
 
     // Start/stop all
     w.start_all.connect_clicked(clone!(@strong procs, @strong log_tx, @weak relay_entry, @weak room_entry, @weak max_text_spin, @weak max_image_spin, @weak max_file_spin, @weak image_mode_combo, @strong update_services_ui => move |_| {
@@ -309,21 +328,23 @@ pub fn connect_service_handlers(
         update_services_ui();
     }));
 
-    w.stop_all.connect_clicked(clone!(@strong procs, @strong log_tx, @strong update_services_ui => move |_| {
-        let mut p = procs.lock().unwrap();
-        if let Some(child) = p.watch.take() {
-            terminate_child(child, "node wl-watch", log_tx.clone());
-            let _ = log_tx.send("stopping wl-watch".into());
-        }
-        if let Some(child) = p.apply.take() {
-            terminate_child(child, "node wl-apply", log_tx.clone());
-            let _ = log_tx.send("stopping wl-apply".into());
-        }
-        if let Some(child) = p.relay.take() {
-            terminate_child(child, "relay", log_tx.clone());
-            let _ = log_tx.send("stopping relay".into());
-        }
-        drop(p);
-        update_services_ui();
-    }));
+    w.stop_all.connect_clicked(
+        clone!(@strong procs, @strong log_tx, @strong update_services_ui => move |_| {
+            let mut p = procs.lock().unwrap();
+            if let Some(child) = p.watch.take() {
+                terminate_child(child, "node wl-watch", log_tx.clone());
+                let _ = log_tx.send("stopping wl-watch".into());
+            }
+            if let Some(child) = p.apply.take() {
+                terminate_child(child, "node wl-apply", log_tx.clone());
+                let _ = log_tx.send("stopping wl-apply".into());
+            }
+            if let Some(child) = p.relay.take() {
+                terminate_child(child, "relay", log_tx.clone());
+                let _ = log_tx.send("stopping relay".into());
+            }
+            drop(p);
+            update_services_ui();
+        }),
+    );
 }

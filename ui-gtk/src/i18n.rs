@@ -198,8 +198,12 @@ pub fn t(lang: Lang, k: K) -> &'static str {
         (Lang::ZhCn, K::LabelRelayTcp) => "Relay 连接（TCP）",
         (Lang::En, K::LabelRelayTcp) => "Relay TCP",
 
-        (Lang::ZhCn, K::HistoryEmptyHint) => "（暂无同步记录：开始 wl-watch / wl-apply 后，这里会显示最近的发送/接收历史）",
-        (Lang::En, K::HistoryEmptyHint) => "(No history yet. Start wl-watch / wl-apply to see recent send/receive events.)",
+        (Lang::ZhCn, K::HistoryEmptyHint) => {
+            "（暂无同步记录：开始 wl-watch / wl-apply 后，这里会显示最近的发送/接收历史）"
+        }
+        (Lang::En, K::HistoryEmptyHint) => {
+            "(No history yet. Start wl-watch / wl-apply to see recent send/receive events.)"
+        }
     }
 }
 

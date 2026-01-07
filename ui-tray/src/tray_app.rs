@@ -1,5 +1,5 @@
 use crate::config::{load_config, UiConfig};
-use crate::i18n::{detect_lang_from_env, parse_lang_id, t, K, Lang};
+use crate::i18n::{detect_lang_from_env, parse_lang_id, t, Lang, K};
 use crate::procs::{find_sibling_binary, spawn_ui_gtk, terminate_child, Procs};
 
 use ksni::{menu::StandardItem, Handle, Status, ToolTip, Tray};

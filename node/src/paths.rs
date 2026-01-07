@@ -47,5 +47,9 @@ pub fn is_tar_payload(name: &str, mime: Option<&str>) -> bool {
 }
 
 pub fn first_8(s: &str) -> &str {
-    if s.len() >= 8 { &s[..8] } else { s }
+    if s.len() >= 8 {
+        &s[..8]
+    } else {
+        s
+    }
 }

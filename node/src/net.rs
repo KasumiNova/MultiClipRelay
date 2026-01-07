@@ -8,7 +8,10 @@ pub async fn connect(relay: &str) -> anyhow::Result<TcpStream> {
 }
 
 pub async fn send_frame(mut stream: TcpStream, buf: Vec<u8>) -> anyhow::Result<()> {
-    stream.write_u32(buf.len() as u32).await.context("write len")?;
+    stream
+        .write_u32(buf.len() as u32)
+        .await
+        .context("write len")?;
     stream.write_all(&buf).await.context("write payload")?;
     Ok(())
 }

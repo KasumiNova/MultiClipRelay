@@ -7,34 +7,40 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use crate::config::{config_path, load_config};
 use crate::i18n::{
-    detect_lang_from_env, help_text, image_mode_hint_text, parse_lang_id, populate_image_mode_combo, t, K, Lang,
+    detect_lang_from_env, help_text, image_mode_hint_text, parse_lang_id,
+    populate_image_mode_combo, t, Lang, K,
 };
 use crate::procs::Procs;
 
-mod constants;
-mod helpers;
 mod apply_lang;
 mod config_wiring;
 mod connection;
+mod constants;
 mod diagnostics;
+mod helpers;
 mod history;
 mod services;
 mod timers;
 
 use self::apply_lang::{make_apply_lang, ApplyLangCtx};
-use self::constants::{LANG_AUTO_ID, PAGE_CONTROL, PAGE_HELP, PAGE_HISTORY, PAGE_LOGS};
 use self::config_wiring::connect_config_wiring;
-use self::diagnostics::connect_diagnostics_handlers;
 use self::connection::install_relay_probe;
+use self::constants::{LANG_AUTO_ID, PAGE_CONTROL, PAGE_HELP, PAGE_HISTORY, PAGE_LOGS};
+use self::diagnostics::connect_diagnostics_handlers;
 use self::history::install_history_refresh;
-use self::services::{connect_service_handlers, make_update_services_ui, ServiceConfigInputs, ServiceWidgets};
+use self::services::{
+    connect_service_handlers, make_update_services_ui, ServiceConfigInputs, ServiceWidgets,
+};
 use self::timers::{install_close_handler, install_log_drain, install_prune_timer};
 
 pub fn build_ui(app: &gtk4::Application) {
     // Safety net: even within a single process, `build_ui` might be called more than once
     // (e.g. if some code path accidentally calls it on repeated activations).
     // If a window already exists, just focus it instead of creating another panel.
-    if let Some(win) = app.active_window().or_else(|| app.windows().into_iter().next()) {
+    if let Some(win) = app
+        .active_window()
+        .or_else(|| app.windows().into_iter().next())
+    {
         win.present();
         return;
     }
@@ -135,9 +141,14 @@ pub fn build_ui(app: &gtk4::Application) {
     // -------- Controls tab --------
     let control_box = gtk4::Box::new(gtk4::Orientation::Vertical, 10);
 
-    let config_frame = gtk4::Frame::builder().label(t(initial_lang, K::SectionConfig)).build();
+    let config_frame = gtk4::Frame::builder()
+        .label(t(initial_lang, K::SectionConfig))
+        .build();
     config_frame.set_margin_bottom(6);
-    let config_grid = gtk4::Grid::builder().row_spacing(6).column_spacing(8).build();
+    let config_grid = gtk4::Grid::builder()
+        .row_spacing(6)
+        .column_spacing(8)
+        .build();
     config_grid.set_margin_top(10);
     config_grid.set_margin_bottom(10);
     config_grid.set_margin_start(10);
@@ -173,9 +184,14 @@ pub fn build_ui(app: &gtk4::Application) {
 
     config_frame.set_child(Some(&config_grid));
 
-    let services_frame = gtk4::Frame::builder().label(t(initial_lang, K::SectionServices)).build();
+    let services_frame = gtk4::Frame::builder()
+        .label(t(initial_lang, K::SectionServices))
+        .build();
     services_frame.set_margin_bottom(6);
-    let services_grid = gtk4::Grid::builder().row_spacing(6).column_spacing(10).build();
+    let services_grid = gtk4::Grid::builder()
+        .row_spacing(6)
+        .column_spacing(10)
+        .build();
     services_grid.set_margin_top(10);
     services_grid.set_margin_bottom(10);
     services_grid.set_margin_start(10);
@@ -202,9 +218,18 @@ pub fn build_ui(app: &gtk4::Application) {
     status_relay_tcp.set_text(t(initial_lang, K::StatusChecking));
 
     let svc_lbl_relay = gtk4::Label::builder().xalign(0.0).label("relay").build();
-    let svc_lbl_watch = gtk4::Label::builder().xalign(0.0).label("node wl-watch").build();
-    let svc_lbl_apply = gtk4::Label::builder().xalign(0.0).label("node wl-apply").build();
-    let svc_lbl_relay_tcp = gtk4::Label::builder().xalign(0.0).label(t(initial_lang, K::LabelRelayTcp)).build();
+    let svc_lbl_watch = gtk4::Label::builder()
+        .xalign(0.0)
+        .label("node wl-watch")
+        .build();
+    let svc_lbl_apply = gtk4::Label::builder()
+        .xalign(0.0)
+        .label("node wl-apply")
+        .build();
+    let svc_lbl_relay_tcp = gtk4::Label::builder()
+        .xalign(0.0)
+        .label(t(initial_lang, K::LabelRelayTcp))
+        .build();
 
     services_grid.attach(&svc_lbl_relay, 0, 0, 1, 1);
     services_grid.attach(&status_relay, 1, 0, 1, 1);
@@ -238,7 +263,9 @@ pub fn build_ui(app: &gtk4::Application) {
     services_box.append(&services_grid);
     services_frame.set_child(Some(&services_box));
 
-    let test_frame = gtk4::Frame::builder().label(t(initial_lang, K::SectionTest)).build();
+    let test_frame = gtk4::Frame::builder()
+        .label(t(initial_lang, K::SectionTest))
+        .build();
     let test_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     test_box.set_margin_top(10);
     test_box.set_margin_bottom(10);
@@ -358,7 +385,8 @@ pub fn build_ui(app: &gtk4::Application) {
         status_watch: status_watch.clone(),
         status_apply: status_apply.clone(),
     };
-    let update_services_ui: Rc<dyn Fn()> = make_update_services_ui(procs.clone(), lang_state.clone(), service_widgets.clone());
+    let update_services_ui: Rc<dyn Fn()> =
+        make_update_services_ui(procs.clone(), lang_state.clone(), service_widgets.clone());
 
     // --- Apply language (runtime refresh) ---
     let apply_lang = make_apply_lang(ApplyLangCtx {
@@ -475,8 +503,16 @@ pub fn build_ui(app: &gtk4::Application) {
     install_close_handler(&window, procs.clone(), log_tx.clone());
 
     // Stack pages
-    stack.add_titled(&control_scroll, Some(PAGE_CONTROL), t(initial_lang, K::TabControl));
-    stack.add_titled(&history_box, Some(PAGE_HISTORY), t(initial_lang, K::TabHistory));
+    stack.add_titled(
+        &control_scroll,
+        Some(PAGE_CONTROL),
+        t(initial_lang, K::TabControl),
+    );
+    stack.add_titled(
+        &history_box,
+        Some(PAGE_HISTORY),
+        t(initial_lang, K::TabHistory),
+    );
     stack.add_titled(&logs_box, Some(PAGE_LOGS), t(initial_lang, K::TabLogs));
     stack.add_titled(&help_scroll, Some(PAGE_HELP), t(initial_lang, K::TabHelp));
 

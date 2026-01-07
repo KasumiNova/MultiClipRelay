@@ -3,8 +3,9 @@ use clap::{Parser, Subcommand};
 use std::fs::File;
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::process::Command;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
+use tokio::sync::watch;
 
 use utils::{Kind, Message};
 
@@ -17,8 +18,7 @@ use node::net::{connect, send_frame, send_join};
 use node::paths::{default_state_dir, first_8, is_tar_payload, received_dir, safe_for_filename};
 use node::suppress::{is_file_suppressed, is_suppressed, set_file_suppress, set_suppress};
 use node::transfer_file::{
-    build_uri_list, collect_clipboard_paths, list_files_recursively, send_file, send_paths_as_file,
-    unpack_tar_bytes,
+    build_uri_list, collect_clipboard_paths, send_file, send_paths_as_file, unpack_tar_bytes,
 };
 use node::transfer_image::{image_mimes, send_image, to_png};
 
@@ -154,11 +154,15 @@ async fn main() -> anyhow::Result<()> {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .try_init();
 
+    // Internal hook mode: wl-paste --watch can only execute a single command (no extra args).
+    // We use env vars to pass parameters and run a hidden publish step when invoked without args.
+    if std::env::var_os("MCR_WL_WATCH_HOOK").is_some() && std::env::args_os().len() <= 1 {
+        return wl_watch_hook().await;
+    }
+
     let cli = Cli::parse();
 
-    let state_dir = cli
-        .state_dir
-        .unwrap_or_else(default_state_dir);
+    let state_dir = cli.state_dir.unwrap_or_else(default_state_dir);
     tokio::fs::create_dir_all(&state_dir)
         .await
         .context("create state_dir")?;
@@ -166,7 +170,10 @@ async fn main() -> anyhow::Result<()> {
         Some(id) => id,
         None => get_or_create_device_id(&state_dir).await?,
     };
-    let ctx = Ctx { state_dir, device_id };
+    let ctx = Ctx {
+        state_dir,
+        device_id,
+    };
 
     match cli.cmd {
         Commands::Listen { room, relay } => listen_mode(&ctx, &room, &relay).await?,
@@ -212,7 +219,11 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?
         }
-        Commands::WlApply { room, relay, image_mode } => {
+        Commands::WlApply {
+            room,
+            relay,
+            image_mode,
+        } => {
             let im = parse_image_mode(&image_mode)?;
             wl_apply(&ctx, &room, &relay, im).await?
         }
@@ -242,8 +253,247 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn wl_watch_hook() -> anyhow::Result<()> {
+    let debug_path = std::env::var("MCR_HOOK_DEBUG_PATH").ok();
+    let debug = |line: &str| {
+        if let Some(p) = debug_path.as_deref() {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "{}", line)
+                });
+        }
+    };
+
+    let state_dir = std::env::var_os("MCR_STATE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_state_dir);
+    tokio::fs::create_dir_all(&state_dir).await.ok();
+
+    let device_id = std::env::var("MCR_DEVICE_ID")
+        .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+    let room = std::env::var("MCR_ROOM").unwrap_or_else(|_| "default".to_string());
+    let relay = std::env::var("MCR_RELAY").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+
+    let max_text_bytes = std::env::var("MCR_MAX_TEXT_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1 * 1024 * 1024);
+    let max_image_bytes = std::env::var("MCR_MAX_IMAGE_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(20 * 1024 * 1024);
+    let max_file_bytes = std::env::var("MCR_MAX_FILE_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(20 * 1024 * 1024);
+
+    let image_mode = std::env::var("MCR_IMAGE_MODE").unwrap_or_else(|_| "force-png".to_string());
+    let im = parse_image_mode(&image_mode)?;
+
+    let ctx = Ctx {
+        state_dir,
+        device_id,
+    };
+
+    // If we were triggered by a specific watcher, wl-paste pipes that type to stdin.
+    // Prefer using stdin bytes directly (avoids nested wl-paste calls which can be flaky).
+    let candidate = std::env::var("MCR_WATCH_CANDIDATE_MIME").ok();
+    if let Some(candidate) = candidate {
+        debug(&format!("hook: candidate={}", candidate));
+        let cap = if candidate.starts_with("image/") {
+            max_image_bytes
+        } else {
+            // text + uri-list/gnome are tiny in practice, but keep a generous cap.
+            std::cmp::max(max_text_bytes, max_file_bytes)
+        };
+
+        let mut stdin = tokio::io::stdin();
+        let mut stored: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 8192];
+        let mut too_big = false;
+        loop {
+            let n = match stdin.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => break,
+            };
+            if !too_big {
+                if stored.len() + n > cap {
+                    too_big = true;
+                } else {
+                    stored.extend_from_slice(&buf[..n]);
+                }
+            }
+            // If too_big, continue draining without storing to avoid blocking wl-paste.
+        }
+        if too_big {
+            debug(&format!("hook: stdin too big (cap={})", cap));
+            return Ok(());
+        }
+
+        debug(&format!("hook: stdin_bytes={}", stored.len()));
+
+        // Determine best MIME for this selection.
+        let out = match Command::new("wl-paste").arg("--list-types").output().await {
+            Ok(o) => o,
+            Err(_) => return Ok(()),
+        };
+        let types = String::from_utf8_lossy(&out.stdout);
+        let has = |m: &str| types.lines().any(|l| l.trim() == m);
+
+        let chosen = if has(URI_LIST_MIME) {
+            URI_LIST_MIME
+        } else if has(GNOME_COPIED_FILES_MIME) {
+            GNOME_COPIED_FILES_MIME
+        } else {
+            let choose_image = || {
+                if im == ImageMode::MultiMime {
+                    for m in ["image/jpeg", "image/webp", "image/gif", "image/png"] {
+                        if has(m) {
+                            return Some(m);
+                        }
+                    }
+                } else {
+                    if has("image/png") {
+                        return Some("image/png");
+                    }
+                    for m in ["image/jpeg", "image/webp", "image/gif"] {
+                        if has(m) {
+                            return Some(m);
+                        }
+                    }
+                }
+                None
+            };
+
+            if let Some(m) = choose_image() {
+                m
+            } else if has("text/plain;charset=utf-8") {
+                "text/plain;charset=utf-8"
+            } else if has("text/plain") {
+                "text/plain"
+            } else {
+                return Ok(());
+            }
+        };
+
+        if candidate != chosen {
+            debug(&format!("hook: chosen={} candidate_mismatch", chosen));
+            return Ok(());
+        }
+
+        debug(&format!("hook: chosen={}", chosen));
+
+        // Publish using the stdin bytes for the chosen type.
+        if chosen == URI_LIST_MIME || chosen == GNOME_COPIED_FILES_MIME {
+            let paths = collect_clipboard_paths(&stored);
+            let mut uniq: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+            for p in paths {
+                uniq.insert(p);
+            }
+            let paths: Vec<PathBuf> = uniq.into_iter().collect();
+            if paths.is_empty() {
+                debug("hook: no paths in uri-list");
+                return Ok(());
+            }
+            let _ = send_paths_as_file(
+                &ctx.state_dir,
+                &ctx.device_id,
+                &room,
+                &relay,
+                paths,
+                max_file_bytes,
+            )
+            .await?;
+            debug("hook: sent file bundle");
+            return Ok(());
+        }
+
+        let (send_mime, send_bytes) = if chosen.starts_with("image/") {
+            match im {
+                ImageMode::ForcePng => match to_png(&stored) {
+                    Ok(png) => ("image/png", png),
+                    Err(e) => {
+                        debug(&format!("hook: to_png failed: {:#}", e));
+                        return Ok(());
+                    }
+                },
+                ImageMode::Passthrough | ImageMode::MultiMime | ImageMode::SpoofPng => {
+                    (chosen, stored)
+                }
+            }
+        } else {
+            (chosen, stored)
+        };
+
+        let sha = sha256_hex(&send_bytes);
+        if is_suppressed(&ctx.state_dir, &room, send_mime, &sha).await {
+            debug(&format!("hook: suppressed mime={} sha={}", send_mime, sha));
+            return Ok(());
+        }
+
+        debug(&format!("hook: sending mime={} bytes={}", send_mime, send_bytes.len()));
+
+        let stream = match connect(&relay).await {
+            Ok(s) => s,
+            Err(e) => {
+                debug(&format!("hook: connect failed: {:#}", e));
+                return Ok(());
+            }
+        };
+        let mut msg = if send_mime.starts_with("text/") {
+            let mut m = Message::new_text(&ctx.device_id, &room, "");
+            m.payload = Some(send_bytes);
+            m.size = m.payload.as_ref().map(|p| p.len()).unwrap_or(0);
+            m
+        } else {
+            Message::new_image(&ctx.device_id, &room, send_mime, send_bytes)
+        };
+        msg.sha256 = Some(sha);
+        if let Err(e) = send_frame(stream, msg.to_bytes()).await {
+            debug(&format!("hook: send_frame failed: {:#}", e));
+            return Ok(());
+        }
+        record_send(
+            &ctx.device_id,
+            &room,
+            &relay,
+            msg.kind,
+            Some(send_mime.to_string()),
+            msg.name.clone(),
+            msg.size,
+            msg.sha256.clone(),
+        )
+        .await;
+        debug("hook: send done");
+        return Ok(());
+    }
+
+    // Fallback: if invoked without a candidate watcher MIME, use the original logic.
+    wl_publish_current(
+        &ctx,
+        &room,
+        &relay,
+        "auto",
+        max_text_bytes,
+        max_image_bytes,
+        max_file_bytes,
+        im,
+    )
+    .await
+}
+
 #[cfg(unix)]
-fn acquire_instance_lock(state_dir: &PathBuf, name: &str, room: &str, relay: &str) -> anyhow::Result<File> {
+fn acquire_instance_lock(
+    state_dir: &PathBuf,
+    name: &str,
+    room: &str,
+    relay: &str,
+) -> anyhow::Result<File> {
     use std::os::unix::io::AsRawFd;
 
     let lock_name = format!(
@@ -277,7 +527,12 @@ fn acquire_instance_lock(state_dir: &PathBuf, name: &str, room: &str, relay: &st
 }
 
 #[cfg(not(unix))]
-fn acquire_instance_lock(_state_dir: &PathBuf, _name: &str, _room: &str, _relay: &str) -> anyhow::Result<()> {
+fn acquire_instance_lock(
+    _state_dir: &PathBuf,
+    _name: &str,
+    _room: &str,
+    _relay: &str,
+) -> anyhow::Result<()> {
     Ok(())
 }
 
@@ -352,7 +607,9 @@ async fn listen_mode(ctx: &Ctx, room: &str, relay: &str) -> anyhow::Result<()> {
     send_join(&mut writer, &ctx.device_id, room).await?;
 
     // spawn reader
-    tokio::spawn(async move { let _ = read_loop(reader).await; });
+    tokio::spawn(async move {
+        let _ = read_loop(reader).await;
+    });
     println!("Listening in room '{}' on {}", room, relay);
     // keep alive
     // keep writer alive as well, otherwise the TCP write half may close and server may disconnect.
@@ -400,8 +657,31 @@ async fn wl_watch(
     let _lock = acquire_instance_lock(&ctx.state_dir, "wl-watch", room, relay)?;
 
     match mode {
-        "watch" => wl_watch_evented(ctx, room, relay, max_text_bytes, max_image_bytes, max_file_bytes, image_mode).await,
-        "poll" => wl_watch_poll(ctx, room, relay, interval_ms, max_text_bytes, max_image_bytes, max_file_bytes, image_mode).await,
+        "watch" => {
+            wl_watch_evented(
+                ctx,
+                room,
+                relay,
+                max_text_bytes,
+                max_image_bytes,
+                max_file_bytes,
+                image_mode,
+            )
+            .await
+        }
+        "poll" => {
+            wl_watch_poll(
+                ctx,
+                room,
+                relay,
+                interval_ms,
+                max_text_bytes,
+                max_image_bytes,
+                max_file_bytes,
+                image_mode,
+            )
+            .await
+        }
         other => anyhow::bail!("invalid --mode {}, expected watch|poll", other),
     }
 }
@@ -422,7 +702,8 @@ async fn wl_watch_poll(
     println!("wl-watch(poll): room='{}' relay='{}'", room, relay);
 
     let mut last_text_hash: Option<String> = None;
-    let mut last_img_hash: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut last_img_hash: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut last_file_hash: Option<String> = None;
 
     loop {
@@ -538,8 +819,15 @@ async fn wl_watch_poll(
                 if last_file_hash.as_deref().is_some() {
                     // keep as-is
                 }
-                if let Some(sha) =
-                    send_paths_as_file(&ctx.state_dir, &ctx.device_id, room, relay, paths, max_file_bytes).await?
+                if let Some(sha) = send_paths_as_file(
+                    &ctx.state_dir,
+                    &ctx.device_id,
+                    room,
+                    relay,
+                    paths,
+                    max_file_bytes,
+                )
+                .await?
                 {
                     Some(sha)
                 } else {
@@ -578,125 +866,135 @@ async fn wl_watch_evented(
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
         .context("install SIGINT handler")?;
 
-    // Spawn watchers. On each change, wl-paste runs our binary to publish current content.
-    let mut children: Vec<tokio::process::Child> = Vec::new();
+    // wl-paste --watch takes a single command (no args), and its triggering behavior depends on
+    // being able to paste a type. Some clipboards offer ONLY image/* or ONLY text/uri-list.
+    //
+    // To reliably trigger on images + files + text, we supervise multiple watchers, one per MIME.
+    // Each watcher passes its MIME as a *candidate*; the hook will only publish when that
+    // candidate equals the current best MIME (auto-detected), preventing duplicates.
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
-    let text_child = Command::new("wl-paste")
-        .arg("--type")
-        .arg("text/plain;charset=utf-8")
-        .arg("--watch")
-        .arg(&exe)
-        .arg("--state-dir")
-        .arg(&ctx.state_dir)
-        .arg("--device-id")
-        .arg(&ctx.device_id)
-        .arg("wl-publish-current")
-        .arg("--room")
-        .arg(room)
-        .arg("--relay")
-        .arg(relay)
-        .arg("--mime")
-        .arg("text/plain;charset=utf-8")
-        .arg("--max-text-bytes")
-        .arg(max_text_bytes.to_string())
-        .arg("--max-image-bytes")
-        .arg(max_image_bytes.to_string())
-        .arg("--image-mode")
-        .arg(match image_mode {
-            ImageMode::Passthrough => "passthrough",
-            ImageMode::ForcePng => "force-png",
-            ImageMode::MultiMime => "multi",
-            ImageMode::SpoofPng => "spoof-png",
-        })
-        .kill_on_drop(true)
-        .spawn()
-        .context("spawn wl-paste watch text")?;
+    let debug_hook_path = if std::env::var_os("MCR_WL_WATCH_DEBUG").is_some() {
+        Some(ctx.state_dir.join("wl_watch_hook.log").to_string_lossy().to_string())
+    } else {
+        None
+    };
 
-    children.push(text_child);
-
-    // files
-    for &mime in [URI_LIST_MIME, GNOME_COPIED_FILES_MIME].iter() {
-        let c = Command::new("wl-paste")
-            .arg("--type")
-            .arg(mime)
-            .arg("--watch")
-            .arg(&exe)
-            .arg("--state-dir")
-            .arg(&ctx.state_dir)
-            .arg("--device-id")
-            .arg(&ctx.device_id)
-            .arg("wl-publish-current")
-            .arg("--room")
-            .arg(room)
-            .arg("--relay")
-            .arg(relay)
-            .arg("--mime")
-            .arg(mime)
-            .arg("--max-text-bytes")
-            .arg(max_text_bytes.to_string())
-            .arg("--max-image-bytes")
-            .arg(max_image_bytes.to_string())
-            .arg("--max-file-bytes")
-            .arg(max_file_bytes.to_string())
-            .arg("--image-mode")
-            .arg(match image_mode {
-                ImageMode::Passthrough => "passthrough",
-                ImageMode::ForcePng => "force-png",
-                ImageMode::MultiMime => "multi",
-                ImageMode::SpoofPng => "spoof-png",
-            })
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| format!("spawn wl-paste watch {mime}"))?;
-        children.push(c);
+    let mut watch_mimes: Vec<String> = Vec::new();
+    watch_mimes.push(URI_LIST_MIME.to_string());
+    watch_mimes.push(GNOME_COPIED_FILES_MIME.to_string());
+    watch_mimes.push("text/plain;charset=utf-8".to_string());
+    watch_mimes.push("text/plain".to_string());
+    for &m in image_mimes().iter() {
+        watch_mimes.push(m.to_string());
     }
 
-    for &mime in image_mimes().iter() {
-        let c = Command::new("wl-paste")
-            .arg("--type")
-            .arg(mime)
-            .arg("--watch")
-            .arg(&exe)
-            .arg("--state-dir")
-            .arg(&ctx.state_dir)
-            .arg("--device-id")
-            .arg(&ctx.device_id)
-            .arg("wl-publish-current")
-            .arg("--room")
-            .arg(room)
-            .arg("--relay")
-            .arg(relay)
-            .arg("--mime")
-            .arg(mime)
-            .arg("--max-text-bytes")
-            .arg(max_text_bytes.to_string())
-            .arg("--max-image-bytes")
-            .arg(max_image_bytes.to_string())
-            .arg("--max-file-bytes")
-            .arg(max_file_bytes.to_string())
-            .arg("--image-mode")
-            .arg(match image_mode {
-                ImageMode::Passthrough => "passthrough",
-                ImageMode::ForcePng => "force-png",
-                ImageMode::MultiMime => "multi",
-                ImageMode::SpoofPng => "spoof-png",
-            })
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| format!("spawn wl-paste watch {mime}"))?;
-        children.push(c);
+    for mime in watch_mimes {
+        let mut stop_rx = stop_rx.clone();
+        let exe = exe.clone();
+        let state_dir = ctx.state_dir.clone();
+        let device_id = ctx.device_id.clone();
+        let room = room.to_string();
+        let relay = relay.to_string();
+        let im = image_mode;
+        let debug_hook_path = debug_hook_path.clone();
+
+        let handle = tokio::spawn(async move {
+            // Backoff to avoid hot loops when the mime isn't currently offered.
+            let backoff = Duration::from_millis(300);
+            loop {
+                if *stop_rx.borrow() {
+                    break;
+                }
+
+                let mut cmd = Command::new("wl-paste");
+                cmd.arg("--no-newline")
+                    .arg("--type")
+                    .arg(&mime)
+                    .arg("--watch")
+                    .arg(&exe);
+
+                // Ensure wl-paste doesn't outlive us if our process dies abruptly (e.g. SIGKILL).
+                // This prevents accumulating orphaned wl-paste processes in the background.
+                unsafe {
+                    cmd.pre_exec(|| {
+                        // Best-effort: if unsupported, ignore.
+                        // PR_SET_PDEATHSIG makes the kernel send SIGTERM to the child when the parent dies.
+                        let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                        Ok(())
+                    });
+                }
+
+                cmd.env("MCR_WL_WATCH_HOOK", "1")
+                    .env("MCR_WATCH_CANDIDATE_MIME", &mime)
+                    .env("MCR_STATE_DIR", state_dir.to_string_lossy().to_string())
+                    .env("MCR_DEVICE_ID", device_id.clone())
+                    .env("MCR_ROOM", room.clone())
+                    .env("MCR_RELAY", relay.clone())
+                    .env("MCR_MAX_TEXT_BYTES", max_text_bytes.to_string())
+                    .env("MCR_MAX_IMAGE_BYTES", max_image_bytes.to_string())
+                    .env("MCR_MAX_FILE_BYTES", max_file_bytes.to_string())
+                    .envs(
+                        debug_hook_path
+                            .as_ref()
+                            .map(|p| [("MCR_HOOK_DEBUG_PATH", p.as_str())])
+                            .into_iter()
+                            .flatten(),
+                    )
+                    .env(
+                        "MCR_IMAGE_MODE",
+                        match im {
+                            ImageMode::Passthrough => "passthrough",
+                            ImageMode::ForcePng => "force-png",
+                            ImageMode::MultiMime => "multi",
+                            ImageMode::SpoofPng => "spoof-png",
+                        },
+                    )
+                    .kill_on_drop(true);
+
+                let child = cmd.spawn();
+
+                let mut child = match child {
+                    Ok(c) => c,
+                    Err(_) => {
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
+                };
+
+                tokio::select! {
+                    _ = stop_rx.changed() => {
+                        let _ = child.kill().await;
+                        break;
+                    }
+                    _ = child.wait() => {
+                        // wl-paste exits if the requested type is not currently offered.
+                        // We'll restart after a short backoff.
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
+                }
+            }
+        });
+        handles.push(handle);
     }
 
     tokio::select! {
         _ = sigterm.recv() => {
-            for c in children.iter_mut() { let _ = c.kill().await; }
+            let _ = stop_tx.send(true);
         }
         _ = sigint.recv() => {
-            for c in children.iter_mut() { let _ = c.kill().await; }
+            let _ = stop_tx.send(true);
         }
         _ = tokio::signal::ctrl_c() => {
-            for c in children.iter_mut() { let _ = c.kill().await; }
+            let _ = stop_tx.send(true);
         }
+    }
+
+    // Best-effort: let tasks observe stop and exit.
+    for h in handles {
+        let _ = h.await;
     }
     Ok(())
 }
@@ -787,6 +1085,69 @@ async fn wl_publish_current(
     max_file_bytes: usize,
     image_mode: ImageMode,
 ) -> anyhow::Result<()> {
+    // Auto mode: determine the best MIME to publish based on current offers.
+    // This is used by wl-watch(watch) to stay robust even when the clipboard
+    // does not currently offer a particular MIME type at startup.
+    let mime = if mime == "auto" {
+        let out = match Command::new("wl-paste").arg("--list-types").output().await {
+            Ok(o) => o,
+            Err(_) => return Ok(()),
+        };
+        let types = String::from_utf8_lossy(&out.stdout);
+        let has = |m: &str| types.lines().any(|l| l.trim() == m);
+
+        let chosen = if has(URI_LIST_MIME) {
+            URI_LIST_MIME
+        } else if has(GNOME_COPIED_FILES_MIME) {
+            GNOME_COPIED_FILES_MIME
+        } else {
+            // Prefer images when available.
+            let choose_image = || {
+                if image_mode == ImageMode::MultiMime {
+                    // Prefer original formats over PNG when we can offer a PNG fallback.
+                    for m in ["image/jpeg", "image/webp", "image/gif", "image/png"] {
+                        if has(m) {
+                            return Some(m);
+                        }
+                    }
+                } else {
+                    // Prefer PNG if present.
+                    if has("image/png") {
+                        return Some("image/png");
+                    }
+                    for m in ["image/jpeg", "image/webp", "image/gif"] {
+                        if has(m) {
+                            return Some(m);
+                        }
+                    }
+                }
+                None
+            };
+
+            if let Some(m) = choose_image() {
+                m
+            } else if has("text/plain;charset=utf-8") {
+                "text/plain;charset=utf-8"
+            } else if has("text/plain") {
+                "text/plain"
+            } else {
+                return Ok(());
+            }
+        };
+
+        // When invoked by wl-watch(watch), multiple MIME-specific watchers may fire.
+        // Only allow the watcher whose candidate MIME matches our chosen best MIME.
+        if let Ok(candidate) = std::env::var("MCR_WATCH_CANDIDATE_MIME") {
+            if candidate != chosen {
+                return Ok(());
+            }
+        }
+
+        chosen
+    } else {
+        mime
+    };
+
     // File selection: read uri-list and send file bytes.
     if mime == URI_LIST_MIME || mime == GNOME_COPIED_FILES_MIME {
         let list_bytes = match wl_paste(mime).await {
@@ -807,8 +1168,15 @@ async fn wl_publish_current(
         }
 
         // send (single file raw / multi or dir tar)
-        let _ =
-            send_paths_as_file(&ctx.state_dir, &ctx.device_id, room, relay, paths, max_file_bytes).await?;
+        let _ = send_paths_as_file(
+            &ctx.state_dir,
+            &ctx.device_id,
+            room,
+            relay,
+            paths,
+            max_file_bytes,
+        )
+        .await?;
         return Ok(());
     }
 
@@ -856,13 +1224,13 @@ async fn wl_publish_current(
 
     let stream = connect(relay).await?;
     let mut msg = if send_mime.starts_with("text/") {
-            let mut m = Message::new_text(&ctx.device_id, room, "");
-            m.payload = Some(send_bytes);
-            m.size = m.payload.as_ref().map(|p| p.len()).unwrap_or(0);
-            m
-        } else {
-            Message::new_image(&ctx.device_id, room, send_mime, send_bytes)
-        };
+        let mut m = Message::new_text(&ctx.device_id, room, "");
+        m.payload = Some(send_bytes);
+        m.size = m.payload.as_ref().map(|p| p.len()).unwrap_or(0);
+        m
+    } else {
+        Message::new_image(&ctx.device_id, room, send_mime, send_bytes)
+    };
     msg.sha256 = Some(sha);
     send_frame(stream, msg.to_bytes()).await?;
     record_send(
@@ -890,7 +1258,8 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
     println!("wl-apply: room='{}' relay='{}'", room, relay);
 
     // Simple loop-prevention: skip if we applied same sha recently.
-    let mut last_applied_sha: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut last_applied_sha: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     loop {
         let len = match reader.read_u32().await {
@@ -906,10 +1275,7 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
             continue;
         }
         if let Some(sha) = msg.sha256.as_deref() {
-            let key = msg
-                .mime
-                .clone()
-                .unwrap_or_else(|| "(no-mime)".to_string());
+            let key = msg.mime.clone().unwrap_or_else(|| "(no-mime)".to_string());
             if last_applied_sha.get(&key).map(|s| s.as_str()) == Some(sha) {
                 continue;
             }
@@ -921,8 +1287,16 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                     wl_copy("text/plain;charset=utf-8", payload).await.ok();
                     record_recv(&ctx.device_id, room, relay, &msg).await;
                     if let Some(sha) = msg.sha256.as_deref() {
-                        set_suppress(&ctx.state_dir, room, "text/plain;charset=utf-8", sha, Duration::from_secs(2)).await;
-                        last_applied_sha.insert("text/plain;charset=utf-8".to_string(), sha.to_string());
+                        set_suppress(
+                            &ctx.state_dir,
+                            room,
+                            "text/plain;charset=utf-8",
+                            sha,
+                            Duration::from_secs(2),
+                        )
+                        .await;
+                        last_applied_sha
+                            .insert("text/plain;charset=utf-8".to_string(), sha.to_string());
                     }
                     println!("applied text ({} bytes)", payload.len());
                 }
@@ -939,7 +1313,14 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                             };
                             let _ = wl_copy(&apply_mime, &apply_bytes).await;
                             if let Some(sha) = msg.sha256.as_deref() {
-                                set_suppress(&ctx.state_dir, room, &apply_mime, sha, Duration::from_secs(2)).await;
+                                set_suppress(
+                                    &ctx.state_dir,
+                                    room,
+                                    &apply_mime,
+                                    sha,
+                                    Duration::from_secs(2),
+                                )
+                                .await;
                                 last_applied_sha.insert(apply_mime.clone(), sha.to_string());
                             }
                             println!("applied {} ({} bytes)", apply_mime, apply_bytes.len());
@@ -949,7 +1330,14 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                             let apply_bytes = payload.to_vec();
                             let _ = wl_copy(&apply_mime, &apply_bytes).await;
                             if let Some(sha) = msg.sha256.as_deref() {
-                                set_suppress(&ctx.state_dir, room, &apply_mime, sha, Duration::from_secs(2)).await;
+                                set_suppress(
+                                    &ctx.state_dir,
+                                    room,
+                                    &apply_mime,
+                                    sha,
+                                    Duration::from_secs(2),
+                                )
+                                .await;
                                 last_applied_sha.insert(apply_mime.clone(), sha.to_string());
                             }
                             println!("applied {} ({} bytes)", apply_mime, apply_bytes.len());
@@ -961,7 +1349,14 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                                 let apply_bytes = payload.to_vec();
                                 let _ = wl_copy(&apply_mime, &apply_bytes).await;
                                 if let Some(sha) = msg.sha256.as_deref() {
-                                    set_suppress(&ctx.state_dir, room, &apply_mime, sha, Duration::from_secs(2)).await;
+                                    set_suppress(
+                                        &ctx.state_dir,
+                                        room,
+                                        &apply_mime,
+                                        sha,
+                                        Duration::from_secs(2),
+                                    )
+                                    .await;
                                     last_applied_sha.insert(apply_mime.clone(), sha.to_string());
                                 }
                                 println!("applied {} ({} bytes)", apply_mime, apply_bytes.len());
@@ -983,7 +1378,14 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
 
                                 let _ = wl_copy_multi(items).await;
                                 for (m, sha) in suppress_items {
-                                    set_suppress(&ctx.state_dir, room, &m, &sha, Duration::from_secs(2)).await;
+                                    set_suppress(
+                                        &ctx.state_dir,
+                                        room,
+                                        &m,
+                                        &sha,
+                                        Duration::from_secs(2),
+                                    )
+                                    .await;
                                     last_applied_sha.insert(m, sha);
                                 }
                                 println!("applied multi-mime {} (+png fallback)", mime);
@@ -992,29 +1394,41 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                         ImageMode::SpoofPng => {
                             // Experimental / high-risk mode: declare image/png but serve the original bytes.
                             // Some applications may crash or hang if they trust the MIME type.
-                            log::warn!("spoof-png: offering image/png with original payload mime={}", mime);
+                            log::warn!(
+                                "spoof-png: offering image/png with original payload mime={}",
+                                mime
+                            );
 
                             let apply_mime = "image/png".to_string();
                             let apply_bytes = payload.to_vec();
                             let _ = wl_copy(&apply_mime, &apply_bytes).await;
 
                             if let Some(sha) = msg.sha256.as_deref() {
-                                set_suppress(&ctx.state_dir, room, &apply_mime, sha, Duration::from_secs(2)).await;
+                                set_suppress(
+                                    &ctx.state_dir,
+                                    room,
+                                    &apply_mime,
+                                    sha,
+                                    Duration::from_secs(2),
+                                )
+                                .await;
                                 last_applied_sha.insert(apply_mime.clone(), sha.to_string());
                             }
-                            println!("applied spoof-png (orig {} bytes as image/png)", apply_bytes.len());
+                            println!(
+                                "applied spoof-png (orig {} bytes as image/png)",
+                                apply_bytes.len()
+                            );
                         }
                     }
                 }
             }
             Kind::File => {
-                let Some(payload) = msg.payload.as_deref() else { continue; };
+                let Some(payload) = msg.payload.as_deref() else {
+                    continue;
+                };
                 record_recv(&ctx.device_id, room, relay, &msg).await;
                 let sha = msg.sha256.clone().unwrap_or_else(|| sha256_hex(payload));
-                if last_applied_sha
-                    .get(FILE_SUPPRESS_KEY)
-                    .map(|s| s.as_str())
-                    == Some(sha.as_str())
+                if last_applied_sha.get(FILE_SUPPRESS_KEY).map(|s| s.as_str()) == Some(sha.as_str())
                 {
                     continue;
                 }
@@ -1041,14 +1455,16 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                     // unpack in a blocking task
                     let out_dir2 = out_dir.clone();
                     let payload2 = payload.to_vec();
-                    let _ = tokio::task::spawn_blocking(move || unpack_tar_bytes(&payload2, &out_dir2)).await;
+                    let _ =
+                        tokio::task::spawn_blocking(move || unpack_tar_bytes(&payload2, &out_dir2))
+                            .await;
 
-                    // Multi-file compatibility: publish individual file URIs.
+                    // Prefer top-level items for better "copy folder" semantics.
                     // Limit to avoid gigantic clipboard payloads.
-                    let files = list_files_recursively(&out_dir, 200);
-                    let uri_list = build_uri_list(&files);
+                    let entries = node::transfer_file::list_top_level_items(&out_dir, 200);
+                    let uri_list = build_uri_list(&entries);
                     let gnome_list = format!("copy\n{}", uri_list);
-                    let plain_lines: String = files
+                    let plain_lines: String = entries
                         .iter()
                         .take(20)
                         .map(|p| p.to_string_lossy().to_string())
@@ -1061,33 +1477,51 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                     };
 
                     let mut items = vec![
-                        ("text/plain;charset=utf-8".to_string(), plain.as_bytes().to_vec()),
+                        (
+                            "text/plain;charset=utf-8".to_string(),
+                            plain.as_bytes().to_vec(),
+                        ),
                         (URI_LIST_MIME.to_string(), uri_list.as_bytes().to_vec()),
-                        (GNOME_COPIED_FILES_MIME.to_string(), gnome_list.as_bytes().to_vec()),
+                        (
+                            GNOME_COPIED_FILES_MIME.to_string(),
+                            gnome_list.as_bytes().to_vec(),
+                        ),
                     ];
-                    // If no files were extracted, fall back to directory uri.
-                    if files.is_empty() {
-                        let uri = format!("file://{}/\n", out_dir.to_string_lossy());
+                    // If nothing was extracted, fall back to directory uri.
+                    if entries.is_empty() {
+                        let uri = build_uri_list(&vec![out_dir.clone()]);
                         items[1].1 = uri.as_bytes().to_vec();
                         items[2].1 = format!("copy\n{}", uri).as_bytes().to_vec();
                     }
 
                     let _ = wl_copy_multi(items).await;
-                    println!("received bundle -> {} ({} bytes, {} files)", out_dir.display(), payload.len(), files.len());
+                    println!(
+                        "received bundle -> {} ({} bytes, {} files)",
+                        out_dir.display(),
+                        payload.len(),
+                        entries.len()
+                    );
                 } else {
                     let out_path = dir.join(format!("{}_{}", sha8, safe));
                     tokio::fs::write(&out_path, payload).await.ok();
 
                     // Write clipboard as file URI + plain path.
                     // NOTE: We can't preserve original remote paths; we point to the local received file.
-                    let uri = format!("file://{}\n", out_path.to_string_lossy());
+                    let uri = build_uri_list(&vec![out_path.clone()]);
                     let plain = out_path.to_string_lossy().to_string();
                     let _ = wl_copy_multi(vec![
-                        ("text/plain;charset=utf-8".to_string(), plain.as_bytes().to_vec()),
+                        (
+                            "text/plain;charset=utf-8".to_string(),
+                            plain.as_bytes().to_vec(),
+                        ),
                         (URI_LIST_MIME.to_string(), uri.as_bytes().to_vec()),
                     ])
                     .await;
-                    println!("received file -> {} ({} bytes)", out_path.display(), payload.len());
+                    println!(
+                        "received file -> {} ({} bytes)",
+                        out_path.display(),
+                        payload.len()
+                    );
                 }
 
                 set_file_suppress(&ctx.state_dir, room, &sha, Duration::from_secs(2)).await;

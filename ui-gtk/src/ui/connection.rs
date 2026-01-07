@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::i18n::{t, K, Lang};
+use crate::i18n::{t, Lang, K};
 use crate::util::normalize_relay_addr_for_connect;
 
 #[derive(Debug, Clone)]
@@ -58,7 +58,7 @@ pub fn install_relay_probe(
     relay_entry: gtk4::Entry,
     status_label: gtk4::Label,
     log_tx: mpsc::Sender<String>,
-    lang_state: Arc<Mutex<Lang>>, 
+    lang_state: Arc<Mutex<Lang>>,
 ) {
     // Thread input: latest relay addr.
     let (addr_tx, addr_rx) = mpsc::channel::<String>();

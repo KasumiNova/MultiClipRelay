@@ -15,11 +15,7 @@ fn main() {
     // Single-instance safety net:
     // If another instance is already running, we become a remote and just activate it.
     // This prevents multiple UI processes from piling up when the launcher is clicked repeatedly.
-    if app
-        .register(None::<&gtk4::gio::Cancellable>)
-        .is_ok()
-        && app.is_remote()
-    {
+    if app.register(None::<&gtk4::gio::Cancellable>).is_ok() && app.is_remote() {
         app.activate();
         return;
     }
@@ -27,7 +23,10 @@ fn main() {
     app.connect_activate(|app| {
         // `activate` can be triggered multiple times (e.g. clicking the launcher repeatedly).
         // Ensure we don't create multiple windows within a single process.
-        if let Some(win) = app.active_window().or_else(|| app.windows().into_iter().next()) {
+        if let Some(win) = app
+            .active_window()
+            .or_else(|| app.windows().into_iter().next())
+        {
             win.present();
             return;
         }
