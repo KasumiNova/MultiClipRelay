@@ -11,6 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install system deps (GTK/GLib)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libglib2.0-dev \
+            libgtk-4-dev
       - name: Build
         run: cargo build --workspace
       - name: Test
