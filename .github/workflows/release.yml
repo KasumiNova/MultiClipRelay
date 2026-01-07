@@ -59,6 +59,12 @@ jobs:
           (cd "$outdir" && tar -czf "${pkg}.tar.gz" "$pkg")
           echo "path=$outdir/${pkg}.tar.gz" >> "$GITHUB_OUTPUT"
 
+      - name: Upload tarball artifact (for AUR)
+        uses: actions/upload-artifact@v4
+        with:
+          name: multicliprelay-tarball
+          path: ${{ steps.tar.outputs.path }}
+
       - name: Build .deb
         id: deb
         shell: bash
@@ -75,3 +81,79 @@ jobs:
           files: |
             ${{ steps.tar.outputs.path }}
             ${{ steps.deb.outputs.path }}
+
+  aur:
+    name: Publish to AUR (binary)
+    needs: linux
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Install tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed git openssh curl
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: multicliprelay-tarball
+          path: dist/release
+
+      - name: Update AUR repo
+        shell: bash
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_PKGNAME: ${{ secrets.AUR_PKGNAME }}
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          pkgname="${AUR_PKGNAME:-multicliprelay-bin}"
+
+          tarball="dist/release/multicliprelay-${ver}-x86_64-linux.tar.gz"
+          if [[ ! -f "$tarball" ]]; then
+            echo "tarball not found: $tarball" >&2
+            ls -la dist/release >&2 || true
+            exit 1
+          fi
+          sha256="$(sha256sum "$tarball" | awk '{print $1}')"
+
+          # Setup SSH for AUR push
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org >> ~/.ssh/known_hosts
+
+          # Clone AUR repo
+          rm -rf aur && mkdir -p aur
+          git clone "ssh://aur@aur.archlinux.org/${pkgname}.git" aur
+
+          # Render PKGBUILD from template
+          tpl="packaging/arch/PKGBUILD.bin.in"
+          if [[ ! -f "$tpl" ]]; then
+            echo "missing template: $tpl" >&2
+            exit 1
+          fi
+          sed -e "s/@PKGVER@/${ver}/g" -e "s/@SHA256@/${sha256}/g" "$tpl" > aur/PKGBUILD
+
+          # Generate .SRCINFO
+          (cd aur && makepkg --printsrcinfo > .SRCINFO)
+
+          # Commit & push (no-op if unchanged)
+          cd aur
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          if git diff --quiet; then
+            echo "AUR repo already up to date.";
+            exit 0
+          fi
+
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to v${ver}"
+          git push
