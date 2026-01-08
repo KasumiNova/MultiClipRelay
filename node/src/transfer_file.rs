@@ -85,6 +85,111 @@ fn common_path_prefix2(a: &PathBuf, b: &PathBuf) -> PathBuf {
     out
 }
 
+fn header_for_dir() -> tar::Header {
+    let mut h = tar::Header::new_ustar();
+    h.set_entry_type(tar::EntryType::Directory);
+    h.set_size(0);
+    h.set_mode(0o755);
+    h.set_mtime(0);
+    h.set_uid(0);
+    h.set_gid(0);
+    h.set_cksum();
+    h
+}
+
+fn header_for_file(len: u64) -> tar::Header {
+    let mut h = tar::Header::new_ustar();
+    h.set_entry_type(tar::EntryType::Regular);
+    h.set_size(len);
+    h.set_mode(0o644);
+    h.set_mtime(0);
+    h.set_uid(0);
+    h.set_gid(0);
+    h.set_cksum();
+    h
+}
+
+fn append_dir_deterministic(
+    builder: &mut tar::Builder<Vec<u8>>,
+    fs_dir: &PathBuf,
+    archive_dir: &PathBuf,
+) -> anyhow::Result<()> {
+    // Root dir entry.
+    let mut h = header_for_dir();
+    h.set_path(archive_dir)
+        .with_context(|| format!("set tar dir path {}", archive_dir.display()))?;
+    h.set_cksum();
+    builder
+        .append(&h, std::io::empty())
+        .with_context(|| format!("append dir header {}", archive_dir.display()))?;
+
+    // Walk children in stable order.
+    let mut entries: Vec<(PathBuf, walkdir::DirEntry)> = WalkDir::new(fs_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path() != fs_dir)
+        .filter_map(|e| {
+            let rel = e.path().strip_prefix(fs_dir).ok()?.to_path_buf();
+            Some((rel, e))
+        })
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (rel, e) in entries {
+        let fs_path = e.path().to_path_buf();
+        let archive_path = archive_dir.join(&rel);
+        if e.file_type().is_dir() {
+            let mut h = header_for_dir();
+            h.set_path(&archive_path).with_context(|| {
+                format!("set tar dir path {}", archive_path.display())
+            })?;
+            h.set_cksum();
+            builder
+                .append(&h, std::io::empty())
+                .with_context(|| format!("append dir {}", archive_path.display()))?;
+        } else if e.file_type().is_file() {
+            let md = std::fs::metadata(&fs_path)
+                .with_context(|| format!("metadata {}", fs_path.display()))?;
+            let mut f = std::fs::File::open(&fs_path)
+                .with_context(|| format!("open {}", fs_path.display()))?;
+            let mut h = header_for_file(md.len());
+            h.set_path(&archive_path).with_context(|| {
+                format!("set tar file path {}", archive_path.display())
+            })?;
+            h.set_cksum();
+            builder
+                .append(&h, &mut f)
+                .with_context(|| format!("append file {}", fs_path.display()))?;
+        } else {
+            // Skip symlinks/special files for safety.
+            continue;
+        }
+    }
+
+    Ok(())
+}
+
+fn append_file_deterministic(
+    builder: &mut tar::Builder<Vec<u8>>,
+    fs_file: &PathBuf,
+    archive_file: &PathBuf,
+) -> anyhow::Result<()> {
+    let md = std::fs::metadata(fs_file).with_context(|| format!("metadata {}", fs_file.display()))?;
+    if !md.is_file() {
+        return Ok(());
+    }
+    let mut f = std::fs::File::open(fs_file).with_context(|| format!("open {}", fs_file.display()))?;
+    let mut h = header_for_file(md.len());
+    h.set_path(archive_file)
+        .with_context(|| format!("set tar file path {}", archive_file.display()))?;
+    h.set_cksum();
+    builder
+        .append(&h, &mut f)
+        .with_context(|| format!("append file {}", fs_file.display()))?;
+    Ok(())
+}
+
 pub fn build_tar_bundle(paths: &[PathBuf]) -> anyhow::Result<Vec<u8>> {
     let mut builder = tar::Builder::new(Vec::new());
 
@@ -129,6 +234,35 @@ pub fn build_tar_bundle(paths: &[PathBuf]) -> anyhow::Result<Vec<u8>> {
         }
     }
 
+    // If we're preserving a file-tree (only-files selection), collect and append
+    // directory headers first so empty dirs can still be reconstructed when possible.
+    if let (Some(root), Some(root_name)) = (&tree_root, &tree_root_name) {
+        let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+        dirs.insert(PathBuf::from(root_name));
+        for p in paths {
+            if let Ok(rel) = p.strip_prefix(root) {
+                if let Some(parent) = rel.parent() {
+                    for d in parent.ancestors() {
+                        if d.as_os_str().is_empty() {
+                            break;
+                        }
+                        dirs.insert(PathBuf::from(root_name).join(d));
+                    }
+                }
+            }
+        }
+
+        for d in dirs {
+            let mut h = header_for_dir();
+            h.set_path(&d)
+                .with_context(|| format!("set tar dir path {}", d.display()))?;
+            h.set_cksum();
+            builder
+                .append(&h, std::io::empty())
+                .with_context(|| format!("append dir {}", d.display()))?;
+        }
+    }
+
     for p in paths {
         let name = p
             .file_name()
@@ -139,22 +273,20 @@ pub fn build_tar_bundle(paths: &[PathBuf]) -> anyhow::Result<Vec<u8>> {
         let md = std::fs::metadata(p).with_context(|| format!("metadata {}", p.display()))?;
         if md.is_dir() {
             // Preserve the directory as a top-level folder in the archive.
-            builder
-                .append_dir_all(&name, p)
+            let archive_dir = PathBuf::from(&name);
+            append_dir_deterministic(&mut builder, p, &archive_dir)
                 .with_context(|| format!("append dir {}", p.display()))?;
         } else if md.is_file() {
             if let (Some(root), Some(root_name)) = (&tree_root, &tree_root_name) {
                 if let Ok(rel) = p.strip_prefix(root) {
                     let archive_name = PathBuf::from(root_name).join(rel);
-                    builder
-                        .append_path_with_name(p, &archive_name)
+                    append_file_deterministic(&mut builder, p, &archive_name)
                         .with_context(|| format!("append file {}", p.display()))?;
                     continue;
                 }
             }
 
-            builder
-                .append_path_with_name(p, &name)
+            append_file_deterministic(&mut builder, p, &PathBuf::from(&name))
                 .with_context(|| format!("append file {}", p.display()))?;
         } else {
             // Skip symlinks/special files for safety.

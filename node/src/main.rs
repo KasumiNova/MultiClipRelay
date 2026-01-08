@@ -390,6 +390,18 @@ async fn wl_watch_hook() -> anyhow::Result<()> {
 
         // Publish using the stdin bytes for the chosen type.
         if chosen == URI_LIST_MIME || chosen == GNOME_COPIED_FILES_MIME {
+            // Multiple supervised wl-paste watchers can trigger nearly at the same time.
+            // Use a short-lived non-blocking lock to ensure we only process one file event
+            // per clipboard change, preventing duplicate sends and feedback-loop amplification.
+            #[cfg(unix)]
+            let _hook_lock = match acquire_instance_lock(&ctx.state_dir, "wl-watch-hook-file", &room, &relay) {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    debug(&format!("hook: file lock busy or error: {:#}", e));
+                    return Ok(());
+                }
+            };
+
             let paths = collect_clipboard_paths(&stored);
             let mut uniq: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
             for p in paths {
