@@ -413,6 +413,12 @@ pub async fn send_paths_as_file(
         return Ok(None);
     }
 
+    // Fast path: if file clipboard is globally suppressed (wildcard '*'), avoid
+    // doing any expensive IO / tar building.
+    if is_file_suppressed(state_dir, room, "0").await {
+        return Ok(None);
+    }
+
     // Single regular file: send raw bytes (best compatibility).
     if paths.len() == 1 {
         let md = tokio::fs::metadata(&paths[0]).await;

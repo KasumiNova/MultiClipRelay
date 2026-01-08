@@ -25,10 +25,17 @@ pub async fn is_suppressed(state_dir: &PathBuf, room: &str, mime: &str, sha: &st
     let mut it = s.lines();
     let ssha = it.next().unwrap_or("").trim();
     let sexp = it.next().unwrap_or("0").trim();
+    let exp: u64 = sexp.parse().unwrap_or(0);
+
+    // Wildcard: suppress any sha within TTL.
+    if ssha == "*" {
+        return utils::now_ms() <= exp;
+    }
+
     if ssha != sha {
         return false;
     }
-    let exp: u64 = sexp.parse().unwrap_or(0);
+
     utils::now_ms() <= exp
 }
 

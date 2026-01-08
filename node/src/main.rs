@@ -1457,6 +1457,19 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
 
                 // If this is a tar bundle, extract into a directory and put that directory into the clipboard.
                 if is_tar_payload(&name, msg.mime.as_deref()) {
+                    // Prevent immediate feedback-loop: wl-apply writes file clipboard formats,
+                    // which can trigger wl-watch almost instantly on the same machine.
+                    // Use a short wildcard suppress window to ignore any file/text changes.
+                    set_file_suppress(&ctx.state_dir, room, "*", Duration::from_millis(1500)).await;
+                    set_suppress(
+                        &ctx.state_dir,
+                        room,
+                        "text/plain;charset=utf-8",
+                        "*",
+                        Duration::from_millis(1500),
+                    )
+                    .await;
+
                     let stem = safe
                         .trim_end_matches(".tar")
                         .trim_end_matches(".TAR")
@@ -1514,6 +1527,17 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                         entries.len()
                     );
                 } else {
+                    // Same feedback-loop guard for single-file payloads.
+                    set_file_suppress(&ctx.state_dir, room, "*", Duration::from_millis(1500)).await;
+                    set_suppress(
+                        &ctx.state_dir,
+                        room,
+                        "text/plain;charset=utf-8",
+                        "*",
+                        Duration::from_millis(1500),
+                    )
+                    .await;
+
                     // Store under a stable hash directory, but keep the original filename.
                     // This avoids "sha prefix" polluting the visible filename on the receiving side.
                     let out_dir = dir.join(&sha8);
