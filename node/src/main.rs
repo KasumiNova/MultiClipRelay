@@ -10,7 +10,7 @@ use tokio::sync::watch;
 use utils::{Kind, Message};
 
 use node::clipboard::{wl_copy, wl_copy_multi, wl_paste};
-use node::consts::{FILE_SUPPRESS_KEY, GNOME_COPIED_FILES_MIME, URI_LIST_MIME};
+use node::consts::{APPLIED_MARKER_MIME, FILE_SUPPRESS_KEY, GNOME_COPIED_FILES_MIME, URI_LIST_MIME};
 use node::hash::sha256_hex;
 use node::history::{record_recv, record_send};
 use node::image_mode::{parse_image_mode, ImageMode};
@@ -344,6 +344,13 @@ async fn wl_watch_hook() -> anyhow::Result<()> {
         };
         let types = String::from_utf8_lossy(&out.stdout);
         let has = |m: &str| types.lines().any(|l| l.trim() == m);
+
+        // If the clipboard contains our "applied" marker, it was written by wl-apply.
+        // Ignore to prevent feedback loops (apply -> watch -> re-send).
+        if has(APPLIED_MARKER_MIME) {
+            debug("hook: applied marker present; ignore");
+            return Ok(());
+        }
 
         let chosen = if has(URI_LIST_MIME) {
             URI_LIST_MIME
@@ -719,6 +726,16 @@ async fn wl_watch_poll(
     let mut last_file_hash: Option<String> = None;
 
     loop {
+        // If wl-apply recently wrote the clipboard, it will include our marker MIME.
+        // Avoid polling and re-sending during that window.
+        if let Ok(out) = Command::new("wl-paste").arg("--list-types").output().await {
+            let types = String::from_utf8_lossy(&out.stdout);
+            if types.lines().any(|l| l.trim() == APPLIED_MARKER_MIME) {
+                tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+                continue;
+            }
+        }
+
         // text/plain
         if let Ok(text_bytes) = wl_paste("text/plain;charset=utf-8").await {
             if !text_bytes.is_empty() && text_bytes.len() <= max_text_bytes {
@@ -1519,6 +1536,12 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                             GNOME_COPIED_FILES_MIME.to_string(),
                             gnome_list.as_bytes().to_vec(),
                         ),
+                        (
+                            APPLIED_MARKER_MIME.to_string(),
+                            format!("applied\nkind=tar\nsha={}\nname={}\n", sha, name)
+                                .as_bytes()
+                                .to_vec(),
+                        ),
                     ];
                     // If nothing was extracted, fall back to directory uri.
                     if entries.is_empty() {
@@ -1571,6 +1594,12 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                             plain.as_bytes().to_vec(),
                         ),
                         (URI_LIST_MIME.to_string(), uri.as_bytes().to_vec()),
+                        (
+                            APPLIED_MARKER_MIME.to_string(),
+                            format!("applied\nkind=file\nsha={}\nname={}\n", sha, name)
+                                .as_bytes()
+                                .to_vec(),
+                        ),
                     ])
                     .await;
                     println!(
