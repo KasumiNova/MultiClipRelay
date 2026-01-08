@@ -1469,6 +1469,14 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                         Duration::from_millis(1500),
                     )
                     .await;
+                    set_suppress(
+                        &ctx.state_dir,
+                        room,
+                        "text/plain",
+                        "*",
+                        Duration::from_millis(1500),
+                    )
+                    .await;
 
                     let stem = safe
                         .trim_end_matches(".tar")
@@ -1533,6 +1541,14 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                         &ctx.state_dir,
                         room,
                         "text/plain;charset=utf-8",
+                        "*",
+                        Duration::from_millis(1500),
+                    )
+                    .await;
+                    set_suppress(
+                        &ctx.state_dir,
+                        room,
+                        "text/plain",
                         "*",
                         Duration::from_millis(1500),
                     )
