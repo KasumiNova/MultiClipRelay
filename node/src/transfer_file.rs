@@ -447,21 +447,20 @@ pub async fn send_file(
     relay: &str,
     max_file_bytes: usize,
 ) -> anyhow::Result<()> {
-    let bytes = tokio::fs::read(file).await.context("read file")?;
-    if bytes.len() > max_file_bytes {
-        anyhow::bail!("file too large: {} bytes > {}", bytes.len(), max_file_bytes);
+    // Send as a tar bundle to preserve metadata (mtime/mode).
+    let file2 = file.clone();
+    let tar_bytes = tokio::task::spawn_blocking(move || build_tar_bundle(&vec![file2]))
+        .await
+        .context("tar build join")??;
+    if tar_bytes.len() > max_file_bytes {
+        anyhow::bail!("file too large: {} bytes > {}", tar_bytes.len(), max_file_bytes);
     }
 
-    let name = file
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("file")
-        .to_string();
-    let mime = detect_file_mime(&bytes, file);
-    let sha = sha256_hex(&bytes);
+    let name = bundle_name_for(&vec![file.clone()]);
+    let sha = sha256_hex(&tar_bytes);
 
     let stream = connect(relay).await?;
-    let mut msg = Message::new_file(local_device_id, room, &name, &mime, bytes);
+    let mut msg = Message::new_file(local_device_id, room, &name, TAR_MIME, tar_bytes);
     msg.sha256 = Some(sha.clone());
     send_frame(stream, msg.to_bytes()).await?;
 
@@ -470,7 +469,7 @@ pub async fn send_file(
         room,
         relay,
         Kind::File,
-        Some(mime),
+        Some(TAR_MIME.to_string()),
         Some(name.clone()),
         msg.size,
         Some(sha),
@@ -499,50 +498,7 @@ pub async fn send_paths_as_file(
         return Ok(None);
     }
 
-    // Single regular file: send raw bytes (best compatibility).
-    if paths.len() == 1 {
-        let md = tokio::fs::metadata(&paths[0]).await;
-        if let Ok(md) = md {
-            if md.is_file() {
-                let bytes = tokio::fs::read(&paths[0]).await.context("read file")?;
-                if bytes.is_empty() || bytes.len() > max_file_bytes {
-                    return Ok(None);
-                }
-                let sha = sha256_hex(&bytes);
-                if is_file_suppressed(state_dir, room, &sha).await {
-                    return Ok(None);
-                }
-
-                let name = paths[0]
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("file")
-                    .to_string();
-                let mime = detect_file_mime(&bytes, &paths[0]);
-
-                let stream = connect(relay).await?;
-                let mut msg = Message::new_file(local_device_id, room, &name, &mime, bytes);
-                msg.sha256 = Some(sha.clone());
-                send_frame(stream, msg.to_bytes()).await?;
-
-                record_send(
-                    local_device_id,
-                    room,
-                    relay,
-                    Kind::File,
-                    Some(mime),
-                    Some(name),
-                    msg.size,
-                    Some(sha.clone()),
-                )
-                .await;
-
-                return Ok(Some(sha));
-            }
-        }
-    }
-
-    // Multiple items or a directory: bundle into a tar.
+    // Bundle into a tar (also for a single file) so we can preserve metadata.
     // Build tar in a blocking task (std::fs + tar builder).
     let paths2 = paths.clone();
     let tar_bytes = tokio::task::spawn_blocking(move || build_tar_bundle(&paths2))
