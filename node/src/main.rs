@@ -1509,24 +1509,78 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                         tokio::task::spawn_blocking(move || unpack_tar_bytes(&payload2, &out_dir2))
                             .await;
 
-                    // Prefer top-level items for better "copy folder" semantics.
-                    // Limit to avoid gigantic clipboard payloads.
-                    let entries = node::transfer_file::list_top_level_items(&out_dir, 200);
-                    let uri_list = build_uri_list(&entries);
-                    let gnome_list = format!("copy\n{}", uri_list);
-                    let plain_lines: String = entries
-                        .iter()
-                        .take(20)
-                        .map(|p| p.to_string_lossy().to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let plain = if plain_lines.is_empty() {
-                        out_dir.to_string_lossy().to_string()
-                    } else {
-                        plain_lines
+                    // Ensure "copy folder" semantics across file managers:
+                    // expose a *single root directory* in the clipboard.
+                    // Some environments may copy a folder as its children (multiple top-level entries).
+                    // In that case, we synthesize a wrapper folder and move entries into it.
+                    let mut entries = node::transfer_file::list_top_level_items(&out_dir, 5000);
+
+                    let sanitize_component = |s: &str| -> String {
+                        let mut out: String = s
+                            .chars()
+                            .map(|c| match c {
+                                '/' | '\\' | '\0' => '_',
+                                _ => c,
+                            })
+                            .collect();
+                        if out.is_empty() {
+                            out = "multicliprelay".to_string();
+                        }
+                        if out == "." || out == ".." {
+                            out = format!("_{}", out);
+                        }
+                        out
                     };
 
-                    let mut items = vec![
+                    // Prefer the raw tar stem (preserves unicode) rather than `safe_for_filename`.
+                    let stem_raw = name
+                        .trim_end_matches(".tar")
+                        .trim_end_matches(".TAR")
+                        .to_string();
+                    let wrapper_name = sanitize_component(&stem_raw);
+
+                    let (root_path, root_name) = if entries.is_empty() {
+                        (out_dir.clone(), wrapper_name.clone())
+                    } else if entries.len() == 1 {
+                        let p = entries[0].clone();
+                        let n = p
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| wrapper_name.clone());
+                        (p, n)
+                    } else {
+                        let wrapper = out_dir.join(&wrapper_name);
+                        tokio::fs::create_dir_all(&wrapper).await.ok();
+
+                        // Move all top-level entries into wrapper.
+                        for src in entries.drain(..) {
+                            let Some(base) = src.file_name().map(|s| s.to_os_string()) else {
+                                continue;
+                            };
+                            let mut dst = wrapper.join(&base);
+                            if tokio::fs::metadata(&dst).await.is_ok() {
+                                // Best-effort collision avoidance.
+                                let b = base.to_string_lossy();
+                                let ts = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis();
+                                dst = wrapper.join(format!("{}_{}", b, ts));
+                            }
+                            let _ = tokio::fs::rename(&src, &dst).await;
+                        }
+                        (wrapper, wrapper_name.clone())
+                    };
+
+                    // Clipboard payloads.
+                    // - text/uri-list should contain only the root path
+                    // - text/plain should be a friendly name (not an absolute path / URI)
+                    let uri_list = build_uri_list(&vec![root_path.clone()]);
+                    let gnome_list = format!("copy\n{}", uri_list);
+                    let plain = root_name.clone();
+
+                    let items = vec![
                         (
                             "text/plain;charset=utf-8".to_string(),
                             plain.as_bytes().to_vec(),
@@ -1543,19 +1597,12 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                                 .to_vec(),
                         ),
                     ];
-                    // If nothing was extracted, fall back to directory uri.
-                    if entries.is_empty() {
-                        let uri = build_uri_list(&vec![out_dir.clone()]);
-                        items[1].1 = uri.as_bytes().to_vec();
-                        items[2].1 = format!("copy\n{}", uri).as_bytes().to_vec();
-                    }
 
                     let _ = wl_copy_multi(items).await;
                     println!(
-                        "received bundle -> {} ({} bytes, {} files)",
-                        out_dir.display(),
+                        "received bundle -> {} ({} bytes)",
+                        root_path.display(),
                         payload.len(),
-                        entries.len()
                     );
                 } else {
                     // Same feedback-loop guard for single-file payloads.
