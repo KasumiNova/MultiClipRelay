@@ -1539,8 +1539,57 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                         .to_string();
                     let wrapper_name = sanitize_component(&stem_raw);
 
-                    let (root_path, root_name) = if entries.is_empty() {
-                        (out_dir.clone(), wrapper_name.clone())
+                    // Generic names come from multi-selection without a clear folder intent.
+                    // In that case we should preserve multi-item paste semantics (no wrapper).
+                    let is_generic_bundle_name = stem_raw.starts_with("multicliprelay-bundle-");
+
+                    async fn move_entry_best_effort(src: &std::path::PathBuf, dst: &std::path::PathBuf) {
+                        if tokio::fs::rename(src, dst).await.is_ok() {
+                            return;
+                        }
+
+                        let md = tokio::fs::metadata(src).await;
+                        let Ok(md) = md else {
+                            return;
+                        };
+
+                        if md.is_file() {
+                            if tokio::fs::copy(src, dst).await.is_ok() {
+                                let _ = tokio::fs::remove_file(src).await;
+                            }
+                            return;
+                        }
+
+                        if md.is_dir() {
+                            let src2 = src.clone();
+                            let dst2 = dst.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                use walkdir::WalkDir;
+                                std::fs::create_dir_all(&dst2).ok();
+                                for e in WalkDir::new(&src2).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+                                    let p = e.path();
+                                    let Ok(rel) = p.strip_prefix(&src2) else { continue; };
+                                    let target = dst2.join(rel);
+                                    if e.file_type().is_dir() {
+                                        std::fs::create_dir_all(&target).ok();
+                                    } else if e.file_type().is_file() {
+                                        if let Some(parent) = target.parent() {
+                                            std::fs::create_dir_all(parent).ok();
+                                        }
+                                        std::fs::copy(p, &target).ok();
+                                    }
+                                }
+                                std::fs::remove_dir_all(&src2).ok();
+                            })
+                            .await;
+                        }
+                    }
+
+                    // Decide how to expose extracted content:
+                    // - If it looks like a generic multi-item bundle, keep multi-item semantics.
+                    // - Otherwise, prefer a single root directory (wrapper) for folder-copy semantics.
+                    let (root_paths, root_name_for_plain) = if entries.is_empty() {
+                        (vec![out_dir.clone()], wrapper_name.clone())
                     } else if entries.len() == 1 {
                         let p = entries[0].clone();
                         let n = p
@@ -1548,13 +1597,24 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                             .and_then(|s| s.to_str())
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| wrapper_name.clone());
-                        (p, n)
+                        (vec![p], n)
+                    } else if is_generic_bundle_name {
+                        // Preserve multi-item paste (e.g. user copied multiple files).
+                        let first_name = entries[0]
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("items")
+                            .to_string();
+                        (entries.clone(), first_name)
                     } else {
+                        // Synthesize a wrapper folder and move top-level entries into it.
                         let wrapper = out_dir.join(&wrapper_name);
                         tokio::fs::create_dir_all(&wrapper).await.ok();
 
-                        // Move all top-level entries into wrapper.
                         for src in entries.drain(..) {
+                            if src == wrapper {
+                                continue;
+                            }
                             let Some(base) = src.file_name().map(|s| s.to_os_string()) else {
                                 continue;
                             };
@@ -1568,23 +1628,20 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                                     .as_millis();
                                 dst = wrapper.join(format!("{}_{}", b, ts));
                             }
-                            let _ = tokio::fs::rename(&src, &dst).await;
+                            move_entry_best_effort(&src, &dst).await;
                         }
-                        (wrapper, wrapper_name.clone())
+
+                        (vec![wrapper], wrapper_name.clone())
                     };
 
                     // Clipboard payloads.
-                    // - text/uri-list should contain only the root path
-                    // - text/plain should be a friendly name (not an absolute path / URI)
-                    let uri_list = build_uri_list(&vec![root_path.clone()]);
+                    // - Always expose paths via uri-list.
+                    // - Avoid providing large/ambiguous text/plain for file bundles to reduce
+                    //   file manager paste oddities (esp. KDE/Dolphin). Keep marker mime.
+                    let uri_list = build_uri_list(&root_paths);
                     let gnome_list = format!("copy\n{}", uri_list);
-                    let plain = root_name.clone();
 
                     let items = vec![
-                        (
-                            "text/plain;charset=utf-8".to_string(),
-                            plain.as_bytes().to_vec(),
-                        ),
                         (URI_LIST_MIME.to_string(), uri_list.as_bytes().to_vec()),
                         (
                             GNOME_COPIED_FILES_MIME.to_string(),
@@ -1592,16 +1649,21 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                         ),
                         (
                             APPLIED_MARKER_MIME.to_string(),
-                            format!("applied\nkind=tar\nsha={}\nname={}\n", sha, name)
-                                .as_bytes()
-                                .to_vec(),
+                            format!(
+                                "applied\nkind=tar\nsha={}\nname={}\nroot_hint={}\n",
+                                sha,
+                                name,
+                                root_name_for_plain
+                            )
+                            .as_bytes()
+                            .to_vec(),
                         ),
                     ];
 
                     let _ = wl_copy_multi(items).await;
                     println!(
-                        "received bundle -> {} ({} bytes)",
-                        root_path.display(),
+                        "received bundle -> {} item(s) ({} bytes)",
+                        root_paths.len(),
                         payload.len(),
                     );
                 } else {

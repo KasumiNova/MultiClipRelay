@@ -39,11 +39,14 @@ pub async fn wl_copy_multi(items: Vec<(String, Vec<u8>)>) -> anyhow::Result<()> 
         let sources = mk_sources(&items);
 
         // Practical note:
-        // - Setting images to PRIMARY can confuse some toolchains / bridges.
-        // - Many apps only use the regular clipboard for paste.
-        // So we only set BOTH for text, and use Regular-only for non-text payloads.
-        let want_both = items.iter().any(|(mime, _)| mime.starts_with("text/"));
-        let clipboard = if want_both {
+        // - Setting file/URI payloads to PRIMARY can confuse some toolchains / file managers.
+        // - Some environments may accidentally interpret PRIMARY text as a "folder name" and
+        //   still paste the URI list from the regular clipboard, producing empty weird folders.
+        // To reduce these artifacts, only set BOTH for *pure* text copies.
+        let only_text = items
+            .iter()
+            .all(|(mime, _)| mime.starts_with("text/plain"));
+        let clipboard = if only_text {
             ClipboardType::Both
         } else {
             ClipboardType::Regular
@@ -54,7 +57,7 @@ pub async fn wl_copy_multi(items: Vec<(String, Vec<u8>)>) -> anyhow::Result<()> 
 
         match opts.copy_multi(sources.clone()) {
             Ok(()) => Ok(()),
-            Err(WlCopyError::PrimarySelectionUnsupported) if want_both => {
+            Err(WlCopyError::PrimarySelectionUnsupported) if only_text => {
                 // Fallback: regular clipboard only.
                 let mut opts = Options::new();
                 opts.clipboard(ClipboardType::Regular).seat(Seat::All);

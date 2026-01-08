@@ -43,18 +43,58 @@ pub fn parse_uri_list(bytes: &[u8]) -> Vec<Url> {
 }
 
 pub fn collect_clipboard_paths(bytes: &[u8]) -> Vec<PathBuf> {
+    fn file_url_to_path_fuzzy(u: &Url) -> Option<PathBuf> {
+        if u.scheme() != "file" {
+            return None;
+        }
+
+        if let Ok(p) = u.to_file_path() {
+            return Some(p);
+        }
+
+        // Some clipboard producers (notably in KDE/Dolphin) may emit `file://home/...`
+        // when they actually mean `/home/...` (i.e. missing the third slash).
+        // In that case Url parses `home` as host and `/...` as path.
+        // Reconstruct the local path as `/{host}{path}`.
+        let host = u.host_str()?;
+        let path = u.path();
+        if host.is_empty() {
+            return None;
+        }
+        Some(PathBuf::from(format!("/{}{}", host, path)))
+    }
+
     parse_uri_list(bytes)
         .into_iter()
-        .filter_map(|u| u.to_file_path().ok())
+        .filter_map(|u| file_url_to_path_fuzzy(&u))
         .collect()
 }
 
 pub fn bundle_name_for(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return format!("multicliprelay-bundle-{}.tar", utils::now_ms());
+    }
+
+    // Single path (file or dir): preserve its visible name.
     if paths.len() == 1 {
         if let Some(n) = paths[0].file_name().and_then(|s| s.to_str()) {
             return format!("{}.tar", n);
         }
+        return format!("multicliprelay-bundle-{}.tar", utils::now_ms());
     }
+
+    // Heuristic: some file managers represent "copy folder" as selecting the folder's
+    // immediate children (multiple entries) rather than the folder itself.
+    // If all selected items share the same parent dir, use that parent dir name.
+    if let Some(parent0) = paths[0].parent() {
+        let same_parent = paths.iter().all(|p| p.parent() == Some(parent0));
+        if same_parent {
+            if let Some(n) = parent0.file_name().and_then(|s| s.to_str()) {
+                return format!("{}.tar", n);
+            }
+        }
+    }
+
     format!("multicliprelay-bundle-{}.tar", utils::now_ms())
 }
 
@@ -509,6 +549,15 @@ mod tests {
         let urls = parse_uri_list(s);
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0].scheme(), "file");
+    }
+
+    #[test]
+    fn collect_clipboard_paths_accepts_file_host_form() {
+        // KDE/Dolphin sometimes emits `file://home/...` for local `/home/...` paths.
+        let s = b"file://home/user/a.txt\n";
+        let paths = collect_clipboard_paths(s);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], PathBuf::from("/home/user/a.txt"));
     }
 
     #[test]
