@@ -61,6 +61,8 @@ pub fn spawn_ui_gtk() -> anyhow::Result<()> {
         .or_else(|| which::which("ui-gtk").ok())
         .unwrap_or_else(|| PathBuf::from("multicliprelay-ui-gtk"));
 
-    Command::new(ui).spawn()?;
+    Command::new(ui)
+        .env("MULTICLIPRELAY_USE_SYSTEMD", "1")
+        .spawn()?;
     Ok(())
 }

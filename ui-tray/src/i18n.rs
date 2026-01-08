@@ -16,6 +16,8 @@ pub enum K {
     StopWatch,
     StartApply,
     StopApply,
+    StartX11Sync,
+    StopX11Sync,
     Quit,
     TooltipTitle,
     TooltipStatusLine,
@@ -72,6 +74,11 @@ pub fn t(lang: Lang, k: K) -> &'static str {
         (Lang::En, K::StartApply) => "Start wl-apply",
         (Lang::ZhCn, K::StopApply) => "停止 wl-apply",
         (Lang::En, K::StopApply) => "Stop wl-apply",
+
+        (Lang::ZhCn, K::StartX11Sync) => "启动 x11-sync",
+        (Lang::En, K::StartX11Sync) => "Start x11-sync",
+        (Lang::ZhCn, K::StopX11Sync) => "停止 x11-sync",
+        (Lang::En, K::StopX11Sync) => "Stop x11-sync",
 
         (Lang::ZhCn, K::Quit) => "退出",
         (Lang::En, K::Quit) => "Quit",

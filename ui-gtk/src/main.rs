@@ -1,6 +1,7 @@
 mod config;
 mod i18n;
 mod procs;
+mod systemd;
 mod ui;
 mod util;
 

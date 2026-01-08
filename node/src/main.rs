@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use std::io;
 use tokio::sync::watch;
 
 use utils::{Kind, Message};
@@ -21,6 +22,7 @@ use node::transfer_file::{
     build_uri_list, collect_clipboard_paths, send_file, send_paths_as_file, unpack_tar_bytes,
 };
 use node::transfer_image::{image_mimes, send_image, to_png};
+use node::x11_sync::{x11_hook_apply_wayland_to_x11, x11_sync_service, X11SyncOpts};
 
 // (ImageMode + parsing are in node::image_mode)
 
@@ -145,6 +147,31 @@ enum Commands {
         #[arg(long, default_value = "force-png")]
         image_mode: String,
     },
+
+    /// Sync clipboard between X11 and Wayland (replaces legacy xclip_sync.sh).
+    ///
+    /// - X11 -> Wayland: polling (small interval)
+    /// - Wayland -> X11: event-driven via wl-paste --watch
+    X11Sync {
+        /// X11 poll interval (ms)
+        #[arg(long, default_value_t = 200)]
+        x11_poll_interval_ms: u64,
+        #[arg(long, default_value_t = 1 * 1024 * 1024)]
+        max_text_bytes: usize,
+        #[arg(long, default_value_t = 20 * 1024 * 1024)]
+        max_image_bytes: usize,
+    },
+
+    /// Internal: invoked by wl-paste --watch for Wayland -> X11 sync.
+    #[command(hide = true)]
+    X11Hook {
+        /// text | image
+        #[arg(long)]
+        kind: String,
+        /// Max stdin bytes allowed
+        #[arg(long, default_value_t = 20 * 1024 * 1024)]
+        max_bytes: usize,
+    },
 }
 
 #[tokio::main]
@@ -248,6 +275,89 @@ async fn main() -> anyhow::Result<()> {
                 im,
             )
             .await?
+        }
+
+        Commands::X11Sync {
+            x11_poll_interval_ms,
+            max_text_bytes,
+            max_image_bytes,
+        } => {
+            async fn ensure_bin(name: &str) -> anyhow::Result<()> {
+                match Command::new(name)
+                    .arg("--help")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .output()
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                        anyhow::bail!("required program not found in PATH: {name}")
+                    }
+                    Err(e) => Err(anyhow::anyhow!(e)).context(format!("check program: {name}")),
+                }
+            }
+
+            ensure_bin("xclip").await?;
+            ensure_bin("wl-paste").await?;
+
+            // Guard against multiple instances (spawns background wl-paste watchers).
+            let _lock = acquire_instance_lock(&ctx.state_dir, "x11-sync", "local", "x11")?;
+
+            // Spawn event-driven watchers (Wayland -> X11).
+            let exe = std::env::current_exe().context("current_exe")?;
+            let state_dir = ctx.state_dir.clone();
+            let spawn_watch = |mime: &str, kind: &str| {
+                let mut cmd = Command::new("wl-paste");
+                cmd.arg("--type").arg(mime)
+                    .arg("--watch")
+                    .arg(exe.clone())
+                    .arg("--state-dir")
+                    .arg(state_dir.clone())
+                    .arg("x11-hook")
+                    .arg("--kind")
+                    .arg(kind)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+
+                // Ensure watcher dies with parent.
+                #[cfg(unix)]
+                unsafe {
+                    cmd.pre_exec(|| {
+                        let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                        Ok(())
+                    });
+                }
+
+                cmd.spawn()
+            };
+
+            let _wl_text = spawn_watch("text", "text").context("spawn wl-paste text watch")?;
+            let _wl_img = spawn_watch("image", "image").context("spawn wl-paste image watch")?;
+
+            // Main loop: X11 -> Wayland.
+            x11_sync_service(X11SyncOpts {
+                state_dir: ctx.state_dir.clone(),
+                poll_interval: Duration::from_millis(x11_poll_interval_ms),
+                max_text_bytes,
+                max_image_bytes,
+            })
+            .await?;
+        }
+
+        Commands::X11Hook { kind, max_bytes } => {
+            // Read stdin fully (wl-paste provides the selection data).
+            let mut buf = Vec::new();
+            tokio::io::stdin()
+                .take(max_bytes as u64 + 1)
+                .read_to_end(&mut buf)
+                .await
+                .ok();
+            if buf.len() > max_bytes {
+                return Ok(());
+            }
+            x11_hook_apply_wayland_to_x11(&ctx.state_dir, &kind, buf).await;
         }
     }
     Ok(())

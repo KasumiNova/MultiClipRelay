@@ -22,6 +22,7 @@ pub fn install_log_drain(log_rx: mpsc::Receiver<String>, log_buf: gtk4::TextBuff
 
 pub fn install_prune_timer(
     procs: Arc<Mutex<Procs>>,
+    use_systemd: bool,
     log_tx: mpsc::Sender<String>,
     update_services_ui: std::rc::Rc<dyn Fn()>,
 ) {
@@ -52,8 +53,15 @@ pub fn install_prune_timer(
                     changed = true;
                     let _ = log_tx.send("wl-apply exited".into());
                 }
+
+                let x11_exited = p.x11.as_mut().and_then(|c| c.try_wait().ok()).flatten().is_some();
+                if x11_exited {
+                    p.x11 = None;
+                    changed = true;
+                    let _ = log_tx.send("x11-sync exited".into());
+                }
             }
-            if changed {
+            if changed || use_systemd {
                 update_services_ui();
             }
             glib::ControlFlow::Continue
@@ -63,12 +71,17 @@ pub fn install_prune_timer(
 
 pub fn install_close_handler(
     window: &gtk4::ApplicationWindow,
+    use_systemd: bool,
     procs: Arc<Mutex<Procs>>,
     log_tx: mpsc::Sender<String>,
 ) {
     window.connect_close_request(clone!(@strong procs, @strong log_tx => @default-return glib::Propagation::Proceed, move |_| {
+        if use_systemd {
+            return glib::Propagation::Proceed;
+        }
         let mut p = procs.lock().unwrap();
         // Don't block the UI thread: terminate in background.
+        if let Some(c) = p.x11.take() { terminate_child(c, "node x11-sync", log_tx.clone()); }
         if let Some(c) = p.watch.take() { terminate_child(c, "node wl-watch", log_tx.clone()); }
         if let Some(c) = p.apply.take() { terminate_child(c, "node wl-apply", log_tx.clone()); }
         if let Some(c) = p.relay.take() { terminate_child(c, "relay", log_tx.clone()); }

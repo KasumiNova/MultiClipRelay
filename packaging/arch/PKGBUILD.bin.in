@@ -48,6 +48,7 @@ package() {
   install -Dm644 "${dir}/packaging/common/systemd/multicliprelay-relay.service"    "${pkgdir}/usr/lib/systemd/user/multicliprelay-relay.service"
   install -Dm644 "${dir}/packaging/common/systemd/multicliprelay-wl-watch.service" "${pkgdir}/usr/lib/systemd/user/multicliprelay-wl-watch.service"
   install -Dm644 "${dir}/packaging/common/systemd/multicliprelay-wl-apply.service" "${pkgdir}/usr/lib/systemd/user/multicliprelay-wl-apply.service"
+  install -Dm644 "${dir}/packaging/common/systemd/multicliprelay-x11-sync.service" "${pkgdir}/usr/lib/systemd/user/multicliprelay-x11-sync.service"
 
   # Examples/docs
   install -Dm644 "${dir}/packaging/common/systemd/multicliprelay.env.example" "${pkgdir}/usr/share/doc/${pkgname}/multicliprelay.env.example"

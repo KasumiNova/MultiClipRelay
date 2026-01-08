@@ -24,6 +24,7 @@ pub struct ApplyLangCtx {
     pub help_buf: gtk4::TextBuffer,
 
     pub clear_logs_btn: gtk4::Button,
+    pub wl_logs_btn: gtk4::Button,
     pub clear_history_btn: gtk4::Button,
     pub reload_btn: gtk4::Button,
 
@@ -33,6 +34,7 @@ pub struct ApplyLangCtx {
     pub lbl_max_text: gtk4::Label,
     pub lbl_max_img: gtk4::Label,
     pub lbl_max_file: gtk4::Label,
+    pub lbl_x11_poll: gtk4::Label,
     pub lbl_img_mode: gtk4::Label,
     pub lbl_lang: gtk4::Label,
 
@@ -46,6 +48,8 @@ pub struct ApplyLangCtx {
     pub stop_watch: gtk4::Button,
     pub start_apply: gtk4::Button,
     pub stop_apply: gtk4::Button,
+    pub start_x11_sync: gtk4::Button,
+    pub stop_x11_sync: gtk4::Button,
     pub start_all: gtk4::Button,
     pub stop_all: gtk4::Button,
 
@@ -85,6 +89,7 @@ pub fn make_apply_lang(ctx: ApplyLangCtx) -> Rc<dyn Fn(Lang)> {
         ctx.lbl_max_text.set_text(t(lang, K::LabelMaxTextBytes));
         ctx.lbl_max_img.set_text(t(lang, K::LabelMaxImageBytes));
         ctx.lbl_max_file.set_text(t(lang, K::LabelMaxFileBytes));
+        ctx.lbl_x11_poll.set_text(t(lang, K::LabelX11PollIntervalMs));
         ctx.lbl_img_mode.set_text(t(lang, K::LabelImageMode));
         ctx.lbl_lang.set_text(t(lang, K::LabelLanguage));
         ctx.lbl_relay_tcp.set_text(t(lang, K::LabelRelayTcp));
@@ -96,6 +101,8 @@ pub fn make_apply_lang(ctx: ApplyLangCtx) -> Rc<dyn Fn(Lang)> {
         ctx.stop_watch.set_label(t(lang, K::BtnStopWatch));
         ctx.start_apply.set_label(t(lang, K::BtnStartApply));
         ctx.stop_apply.set_label(t(lang, K::BtnStopApply));
+        ctx.start_x11_sync.set_label(t(lang, K::BtnStartX11Sync));
+        ctx.stop_x11_sync.set_label(t(lang, K::BtnStopX11Sync));
         ctx.start_all.set_label(t(lang, K::BtnStartAll));
         ctx.stop_all.set_label(t(lang, K::BtnStopAll));
 
@@ -105,6 +112,7 @@ pub fn make_apply_lang(ctx: ApplyLangCtx) -> Rc<dyn Fn(Lang)> {
         ctx.show_clip_types.set_label(t(lang, K::BtnShowClipTypes));
 
         ctx.clear_logs_btn.set_label(t(lang, K::BtnClearLogs));
+        ctx.wl_logs_btn.set_label(t(lang, K::BtnWlClipboardLogs));
         ctx.clear_history_btn.set_label(t(lang, K::BtnClearHistory));
         ctx.reload_btn.set_label(t(lang, K::BtnReloadConfig));
 

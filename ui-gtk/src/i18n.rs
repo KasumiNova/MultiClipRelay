@@ -21,6 +21,7 @@ pub enum K {
     LabelMaxTextBytes,
     LabelMaxImageBytes,
     LabelMaxFileBytes,
+    LabelX11PollIntervalMs,
     LabelImageMode,
     LabelLanguage,
     BtnStartRelay,
@@ -29,10 +30,13 @@ pub enum K {
     BtnStopWatch,
     BtnStartApply,
     BtnStopApply,
+    BtnStartX11Sync,
+    BtnStopX11Sync,
     BtnSendTestText,
     BtnSendTestImage,
     BtnSendTestFile,
     BtnShowClipTypes,
+    BtnWlClipboardLogs,
     BtnClearLogs,
     BtnClearHistory,
     ChooseImageTitle,
@@ -57,6 +61,8 @@ pub enum K {
     StatusChecking,
 
     LabelRelayTcp,
+
+    WindowWlClipboardLogs,
 
     HistoryEmptyHint,
 }
@@ -116,6 +122,8 @@ pub fn t(lang: Lang, k: K) -> &'static str {
         (Lang::En, K::LabelMaxImageBytes) => "Max image bytes",
         (Lang::ZhCn, K::LabelMaxFileBytes) => "文件大小上限（bytes）",
         (Lang::En, K::LabelMaxFileBytes) => "Max file bytes",
+        (Lang::ZhCn, K::LabelX11PollIntervalMs) => "X11 轮询间隔（ms）",
+        (Lang::En, K::LabelX11PollIntervalMs) => "X11 poll interval (ms)",
         (Lang::ZhCn, K::LabelImageMode) => "图片模式",
         (Lang::En, K::LabelImageMode) => "Image mode",
         (Lang::ZhCn, K::LabelLanguage) => "语言",
@@ -136,6 +144,11 @@ pub fn t(lang: Lang, k: K) -> &'static str {
         (Lang::ZhCn, K::BtnStopApply) => "停止 wl-apply",
         (Lang::En, K::BtnStopApply) => "Stop wl-apply",
 
+        (Lang::ZhCn, K::BtnStartX11Sync) => "启动 x11-sync",
+        (Lang::En, K::BtnStartX11Sync) => "Start x11-sync",
+        (Lang::ZhCn, K::BtnStopX11Sync) => "停止 x11-sync",
+        (Lang::En, K::BtnStopX11Sync) => "Stop x11-sync",
+
         (Lang::ZhCn, K::BtnSendTestText) => "发送测试文本",
         (Lang::En, K::BtnSendTestText) => "Send test text",
         (Lang::ZhCn, K::BtnSendTestImage) => "发送测试图片",
@@ -144,6 +157,8 @@ pub fn t(lang: Lang, k: K) -> &'static str {
         (Lang::En, K::BtnSendTestFile) => "Send test file",
         (Lang::ZhCn, K::BtnShowClipTypes) => "查看剪贴板类型",
         (Lang::En, K::BtnShowClipTypes) => "Show clipboard types",
+        (Lang::ZhCn, K::BtnWlClipboardLogs) => "wl-clipboard 日志",
+        (Lang::En, K::BtnWlClipboardLogs) => "wl-clipboard logs",
         (Lang::ZhCn, K::BtnClearLogs) => "清空日志",
         (Lang::En, K::BtnClearLogs) => "Clear logs",
         (Lang::ZhCn, K::BtnClearHistory) => "清空历史",
@@ -197,6 +212,9 @@ pub fn t(lang: Lang, k: K) -> &'static str {
 
         (Lang::ZhCn, K::LabelRelayTcp) => "Relay 连接（TCP）",
         (Lang::En, K::LabelRelayTcp) => "Relay TCP",
+
+        (Lang::ZhCn, K::WindowWlClipboardLogs) => "wl-clipboard 日志（systemd）",
+        (Lang::En, K::WindowWlClipboardLogs) => "wl-clipboard logs (systemd)",
 
         (Lang::ZhCn, K::HistoryEmptyHint) => {
             "（暂无同步记录：开始 wl-watch / wl-apply 后，这里会显示最近的发送/接收历史）"

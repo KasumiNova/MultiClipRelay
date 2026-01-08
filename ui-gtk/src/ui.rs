@@ -1,3 +1,4 @@
+mod wl_clipboard_logs;
 use glib::clone;
 use gtk4::prelude::*;
 
@@ -11,6 +12,7 @@ use crate::i18n::{
     populate_image_mode_combo, t, Lang, K,
 };
 use crate::procs::Procs;
+use crate::systemd;
 
 mod apply_lang;
 mod config_wiring;
@@ -32,11 +34,9 @@ use self::services::{
     connect_service_handlers, make_update_services_ui, ServiceConfigInputs, ServiceWidgets,
 };
 use self::timers::{install_close_handler, install_log_drain, install_prune_timer};
+use self::wl_clipboard_logs::open_wl_clipboard_logs_window;
 
 pub fn build_ui(app: &gtk4::Application) {
-    // Safety net: even within a single process, `build_ui` might be called more than once
-    // (e.g. if some code path accidentally calls it on repeated activations).
-    // If a window already exists, just focus it instead of creating another panel.
     if let Some(win) = app
         .active_window()
         .or_else(|| app.windows().into_iter().next())
@@ -56,6 +56,21 @@ pub fn build_ui(app: &gtk4::Application) {
     let lang_state: Arc<Mutex<Lang>> = Arc::new(Mutex::new(initial_lang));
 
     let procs: Arc<Mutex<Procs>> = Arc::new(Mutex::new(Procs::default()));
+
+    let use_systemd = systemd::enabled_from_env_or_auto();
+    if use_systemd {
+        // Keep systemd env in sync with current config on startup.
+        let _ = systemd::write_env_from_ui_config(&cfg);
+    }
+
+    let svc_status: Arc<Mutex<systemd::ServiceStatus>> = Arc::new(Mutex::new(systemd::ServiceStatus::default()));
+    if use_systemd {
+        let status = svc_status.clone();
+        std::thread::spawn(move || loop {
+            *status.lock().unwrap() = systemd::status_snapshot();
+            std::thread::sleep(std::time::Duration::from_millis(700));
+        });
+    }
 
     let (log_tx, log_rx) = mpsc::channel::<String>();
 
@@ -111,9 +126,18 @@ pub fn build_ui(app: &gtk4::Application) {
         1024.0,
         0.0,
     );
+    let x11_poll_adj = gtk4::Adjustment::new(
+        cfg.x11_poll_interval_ms as f64,
+        10.0,
+        10_000.0,
+        10.0,
+        50.0,
+        0.0,
+    );
     let max_text_spin = gtk4::SpinButton::new(Some(&max_text_adj), 1024.0, 0);
     let max_image_spin = gtk4::SpinButton::new(Some(&max_image_adj), 1024.0, 0);
     let max_file_spin = gtk4::SpinButton::new(Some(&max_file_adj), 1024.0, 0);
+    let x11_poll_spin = gtk4::SpinButton::new(Some(&x11_poll_adj), 10.0, 0);
 
     let language_combo = gtk4::ComboBoxText::new();
     language_combo.append(Some(LANG_AUTO_ID), t(initial_lang, K::LangAuto));
@@ -159,6 +183,7 @@ pub fn build_ui(app: &gtk4::Application) {
     let lbl_max_text = gtk4::Label::builder().xalign(0.0).build();
     let lbl_max_img = gtk4::Label::builder().xalign(0.0).build();
     let lbl_max_file = gtk4::Label::builder().xalign(0.0).build();
+    let lbl_x11_poll = gtk4::Label::builder().xalign(0.0).build();
     let lbl_img_mode = gtk4::Label::builder().xalign(0.0).build();
     let lbl_lang = gtk4::Label::builder().xalign(0.0).build();
 
@@ -175,12 +200,15 @@ pub fn build_ui(app: &gtk4::Application) {
     config_grid.attach(&lbl_max_file, 0, 2, 1, 1);
     config_grid.attach(&max_file_spin, 1, 2, 3, 1);
 
-    config_grid.attach(&lbl_img_mode, 0, 3, 1, 1);
-    config_grid.attach(&image_mode_combo, 1, 3, 3, 1);
-    config_grid.attach(&mode_hint, 1, 4, 3, 1);
+    config_grid.attach(&lbl_x11_poll, 0, 3, 1, 1);
+    config_grid.attach(&x11_poll_spin, 1, 3, 3, 1);
 
-    config_grid.attach(&lbl_lang, 0, 5, 1, 1);
-    config_grid.attach(&language_combo, 1, 5, 3, 1);
+    config_grid.attach(&lbl_img_mode, 0, 4, 1, 1);
+    config_grid.attach(&image_mode_combo, 1, 4, 3, 1);
+    config_grid.attach(&mode_hint, 1, 5, 3, 1);
+
+    config_grid.attach(&lbl_lang, 0, 6, 1, 1);
+    config_grid.attach(&language_combo, 1, 6, 3, 1);
 
     config_frame.set_child(Some(&config_grid));
 
@@ -206,14 +234,18 @@ pub fn build_ui(app: &gtk4::Application) {
     let stop_watch_btn = gtk4::Button::with_label(t(initial_lang, K::BtnStopWatch));
     let start_apply_btn = gtk4::Button::with_label(t(initial_lang, K::BtnStartApply));
     let stop_apply_btn = gtk4::Button::with_label(t(initial_lang, K::BtnStopApply));
+    let start_x11_btn = gtk4::Button::with_label(t(initial_lang, K::BtnStartX11Sync));
+    let stop_x11_btn = gtk4::Button::with_label(t(initial_lang, K::BtnStopX11Sync));
 
     let status_relay = gtk4::Label::builder().xalign(0.0).build();
     let status_watch = gtk4::Label::builder().xalign(0.0).build();
     let status_apply = gtk4::Label::builder().xalign(0.0).build();
+    let status_x11 = gtk4::Label::builder().xalign(0.0).build();
     let status_relay_tcp = gtk4::Label::builder().xalign(0.0).build();
     status_relay.add_css_class("dim-label");
     status_watch.add_css_class("dim-label");
     status_apply.add_css_class("dim-label");
+    status_x11.add_css_class("dim-label");
     status_relay_tcp.add_css_class("dim-label");
     status_relay_tcp.set_text(t(initial_lang, K::StatusChecking));
 
@@ -225,6 +257,10 @@ pub fn build_ui(app: &gtk4::Application) {
     let svc_lbl_apply = gtk4::Label::builder()
         .xalign(0.0)
         .label("node wl-apply")
+        .build();
+    let svc_lbl_x11 = gtk4::Label::builder()
+        .xalign(0.0)
+        .label("node x11-sync")
         .build();
     let svc_lbl_relay_tcp = gtk4::Label::builder()
         .xalign(0.0)
@@ -246,10 +282,15 @@ pub fn build_ui(app: &gtk4::Application) {
     services_grid.attach(&start_apply_btn, 2, 2, 1, 1);
     services_grid.attach(&stop_apply_btn, 3, 2, 1, 1);
 
+    services_grid.attach(&svc_lbl_x11, 0, 3, 1, 1);
+    services_grid.attach(&status_x11, 1, 3, 1, 1);
+    services_grid.attach(&start_x11_btn, 2, 3, 1, 1);
+    services_grid.attach(&stop_x11_btn, 3, 3, 1, 1);
+
     // Connection status (client -> relay TCP reachability)
-    services_grid.attach(&svc_lbl_relay_tcp, 0, 3, 1, 1);
+    services_grid.attach(&svc_lbl_relay_tcp, 0, 4, 1, 1);
     // Span across remaining columns (no action buttons here)
-    services_grid.attach(&status_relay_tcp, 1, 3, 3, 1);
+    services_grid.attach(&status_relay_tcp, 1, 4, 3, 1);
 
     let services_actions = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     services_actions.set_margin_top(10);
@@ -313,16 +354,26 @@ pub fn build_ui(app: &gtk4::Application) {
         .build();
 
     let clear_logs = gtk4::Button::with_label(t(initial_lang, K::BtnClearLogs));
+    let wl_logs_btn = gtk4::Button::with_label(t(initial_lang, K::BtnWlClipboardLogs));
+    wl_logs_btn.set_sensitive(use_systemd);
+    wl_logs_btn.connect_clicked(clone!(@strong app, @weak window, @strong lang_state => move |_| {
+        let lang = *lang_state.lock().unwrap();
+        open_wl_clipboard_logs_window(&app, &window, lang);
+    }));
     clear_logs.connect_clicked(clone!(@weak log_buf => move |_| {
         log_buf.set_text("");
     }));
+
+    let logs_actions = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    logs_actions.append(&clear_logs);
+    logs_actions.append(&wl_logs_btn);
 
     let logs_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
     logs_box.set_margin_top(12);
     logs_box.set_margin_bottom(12);
     logs_box.set_margin_start(12);
     logs_box.set_margin_end(12);
-    logs_box.append(&clear_logs);
+    logs_box.append(&logs_actions);
     logs_box.append(&log_scroll);
 
     // --- History view ---
@@ -381,12 +432,15 @@ pub fn build_ui(app: &gtk4::Application) {
         stop_watch_btn: stop_watch_btn.clone(),
         start_apply_btn: start_apply_btn.clone(),
         stop_apply_btn: stop_apply_btn.clone(),
+        start_x11_btn: start_x11_btn.clone(),
+        stop_x11_btn: stop_x11_btn.clone(),
         status_relay: status_relay.clone(),
         status_watch: status_watch.clone(),
         status_apply: status_apply.clone(),
+        status_x11: status_x11.clone(),
     };
     let update_services_ui: Rc<dyn Fn()> =
-        make_update_services_ui(procs.clone(), lang_state.clone(), service_widgets.clone());
+        make_update_services_ui(procs.clone(), svc_status.clone(), use_systemd, lang_state.clone(), service_widgets.clone());
 
     // --- Apply language (runtime refresh) ---
     let apply_lang = make_apply_lang(ApplyLangCtx {
@@ -399,6 +453,7 @@ pub fn build_ui(app: &gtk4::Application) {
         mode_hint: mode_hint.clone(),
         help_buf: help_buf.clone(),
         clear_logs_btn: clear_logs.clone(),
+            wl_logs_btn: wl_logs_btn.clone(),
         clear_history_btn: clear_history.clone(),
         reload_btn: reload_btn.clone(),
         lbl_relay: lbl_relay.clone(),
@@ -406,6 +461,7 @@ pub fn build_ui(app: &gtk4::Application) {
         lbl_max_text: lbl_max_text.clone(),
         lbl_max_img: lbl_max_img.clone(),
         lbl_max_file: lbl_max_file.clone(),
+            lbl_x11_poll: lbl_x11_poll.clone(),
         lbl_img_mode: lbl_img_mode.clone(),
         lbl_lang: lbl_lang.clone(),
         lbl_relay_tcp: svc_lbl_relay_tcp.clone(),
@@ -415,6 +471,8 @@ pub fn build_ui(app: &gtk4::Application) {
         stop_watch: stop_watch_btn.clone(),
         start_apply: start_apply_btn.clone(),
         stop_apply: stop_apply_btn.clone(),
+        start_x11_sync: start_x11_btn.clone(),
+        stop_x11_sync: stop_x11_btn.clone(),
         start_all: start_all.clone(),
         stop_all: stop_all.clone(),
         send_test_text: send_test_text.clone(),
@@ -452,6 +510,7 @@ pub fn build_ui(app: &gtk4::Application) {
             max_text_spin: max_text_spin.clone(),
             max_image_spin: max_image_spin.clone(),
             max_file_spin: max_file_spin.clone(),
+                        x11_poll_spin: x11_poll_spin.clone(),
             image_mode_combo: image_mode_combo.clone(),
         },
     );
@@ -484,6 +543,7 @@ pub fn build_ui(app: &gtk4::Application) {
         apply_lang: apply_lang.clone(),
         update_services_ui: update_services_ui.clone(),
         ui: config_wiring::ConfigWidgets {
+                        x11_poll_spin: x11_poll_spin.clone(),
             relay_entry: relay_entry.clone(),
             room_entry: room_entry.clone(),
             max_text_spin: max_text_spin.clone(),
@@ -499,8 +559,8 @@ pub fn build_ui(app: &gtk4::Application) {
         suppress_mode_combo: suppress_mode_combo.clone(),
     });
 
-    // Kill child processes when window closes
-    install_close_handler(&window, procs.clone(), log_tx.clone());
+    // Kill child processes when window closes (non-systemd mode only)
+    install_close_handler(&window, use_systemd, procs.clone(), log_tx.clone());
 
     // Stack pages
     stack.add_titled(
@@ -524,7 +584,7 @@ pub fn build_ui(app: &gtk4::Application) {
     update_services_ui();
 
     // Prune exited child processes and keep UI state correct.
-    install_prune_timer(procs.clone(), log_tx.clone(), update_services_ui.clone());
+    install_prune_timer(procs.clone(), use_systemd, log_tx.clone(), update_services_ui.clone());
 
     root.append(&stack);
     window.set_child(Some(&root));

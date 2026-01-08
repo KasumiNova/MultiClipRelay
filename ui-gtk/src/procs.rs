@@ -12,6 +12,7 @@ pub struct Procs {
     pub relay: Option<Child>,
     pub watch: Option<Child>,
     pub apply: Option<Child>,
+    pub x11: Option<Child>,
 }
 
 pub fn terminate_child(mut child: Child, label: &'static str, log_tx: mpsc::Sender<String>) {

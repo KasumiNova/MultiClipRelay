@@ -14,6 +14,9 @@ pub struct UiConfig {
     #[serde(default = "default_image_mode")]
     pub image_mode: String,
 
+    #[serde(default = "default_x11_poll_interval_ms")]
+    pub x11_poll_interval_ms: u64,
+
     #[serde(default = "default_language")]
     pub language: String,
 
@@ -36,6 +39,10 @@ fn default_max_file_bytes() -> usize {
     20 * 1024 * 1024
 }
 
+fn default_x11_poll_interval_ms() -> u64 {
+    200
+}
+
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
@@ -45,6 +52,7 @@ impl Default for UiConfig {
             max_image_bytes: 20 * 1024 * 1024,
             max_file_bytes: default_max_file_bytes(),
             image_mode: default_image_mode(),
+            x11_poll_interval_ms: default_x11_poll_interval_ms(),
             language: default_language(),
             force_png: None,
         }

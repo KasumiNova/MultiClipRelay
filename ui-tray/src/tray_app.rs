@@ -1,6 +1,7 @@
 use crate::config::{load_config, UiConfig};
 use crate::i18n::{detect_lang_from_env, parse_lang_id, t, Lang, K};
 use crate::procs::{find_sibling_binary, spawn_ui_gtk, terminate_child, Procs};
+use crate::systemd;
 
 use ksni::{menu::StandardItem, Handle, Status, ToolTip, Tray};
 
@@ -13,6 +14,14 @@ use std::time::Duration;
 
 pub struct MultiClipRelayTray {
     state: Arc<Mutex<AppState>>,
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+struct ServiceStatus {
+    relay: bool,
+    watch: bool,
+    apply: bool,
+    x11: bool,
 }
 
 impl MultiClipRelayTray {
@@ -38,6 +47,9 @@ impl MultiClipRelayTray {
             Ok(cfg) => {
                 let mut st = self.state.lock().unwrap();
                 st.cfg = cfg;
+                if st.systemd {
+                    let _ = systemd::write_env_from_ui_config(&st.cfg);
+                }
             }
             Err(e) => {
                 eprintln!("failed to reload config: {e:?}");
@@ -49,9 +61,11 @@ impl MultiClipRelayTray {
         self.start_relay();
         self.start_apply();
         self.start_watch();
+        self.start_x11_sync();
     }
 
     fn stop_all(&self) {
+        self.stop_x11_sync();
         self.stop_watch();
         self.stop_apply();
         self.stop_relay();
@@ -59,6 +73,13 @@ impl MultiClipRelayTray {
 
     fn start_relay(&self) {
         let mut st = self.state.lock().unwrap();
+        if st.systemd {
+            let _ = systemd::write_env_from_ui_config(&st.cfg);
+            if let Err(e) = systemd::start(systemd::UNIT_RELAY) {
+                eprintln!("failed to start relay (systemd): {e:?}");
+            }
+            return;
+        }
         if st.procs.relay.is_some() {
             return;
         }
@@ -85,21 +106,36 @@ impl MultiClipRelayTray {
     }
 
     fn stop_relay(&self) {
-        let child = {
-            let mut st = self.state.lock().unwrap();
-            st.procs.relay.take()
-        };
-        if let Some(child) = child {
+        let mut st = self.state.lock().unwrap();
+        if st.systemd {
+            if let Err(e) = systemd::stop(systemd::UNIT_RELAY) {
+                eprintln!("failed to stop relay (systemd): {e:?}");
+            }
+            return;
+        }
+        if let Some(child) = st.procs.relay.take() {
             terminate_child(child, "relay");
         }
     }
 
     fn start_watch(&self) {
-        let (cfg, already) = {
+        let (cfg, systemd_mode, already_child) = {
             let st = self.state.lock().unwrap();
-            (st.cfg.clone(), st.procs.watch.is_some())
+            (st.cfg.clone(), st.systemd, st.procs.watch.is_some())
         };
-        if already {
+
+        if systemd_mode {
+            if systemd::is_active(systemd::UNIT_WL_WATCH) {
+                return;
+            }
+            let _ = systemd::write_env_from_ui_config(&cfg);
+            if let Err(e) = systemd::start(systemd::UNIT_WL_WATCH) {
+                eprintln!("failed to start wl-watch (systemd): {e:?}");
+            }
+            return;
+        }
+
+        if already_child {
             return;
         }
 
@@ -139,21 +175,36 @@ impl MultiClipRelayTray {
     }
 
     fn stop_watch(&self) {
-        let child = {
-            let mut st = self.state.lock().unwrap();
-            st.procs.watch.take()
-        };
-        if let Some(child) = child {
+        let mut st = self.state.lock().unwrap();
+        if st.systemd {
+            if let Err(e) = systemd::stop(systemd::UNIT_WL_WATCH) {
+                eprintln!("failed to stop wl-watch (systemd): {e:?}");
+            }
+            return;
+        }
+        if let Some(child) = st.procs.watch.take() {
             terminate_child(child, "node wl-watch");
         }
     }
 
     fn start_apply(&self) {
-        let (cfg, already) = {
+        let (cfg, systemd_mode, already_child) = {
             let st = self.state.lock().unwrap();
-            (st.cfg.clone(), st.procs.apply.is_some())
+            (st.cfg.clone(), st.systemd, st.procs.apply.is_some())
         };
-        if already {
+
+        if systemd_mode {
+            if systemd::is_active(systemd::UNIT_WL_APPLY) {
+                return;
+            }
+            let _ = systemd::write_env_from_ui_config(&cfg);
+            if let Err(e) = systemd::start(systemd::UNIT_WL_APPLY) {
+                eprintln!("failed to start wl-apply (systemd): {e:?}");
+            }
+            return;
+        }
+
+        if already_child {
             return;
         }
 
@@ -185,12 +236,41 @@ impl MultiClipRelayTray {
     }
 
     fn stop_apply(&self) {
-        let child = {
-            let mut st = self.state.lock().unwrap();
-            st.procs.apply.take()
-        };
-        if let Some(child) = child {
+        let mut st = self.state.lock().unwrap();
+        if st.systemd {
+            if let Err(e) = systemd::stop(systemd::UNIT_WL_APPLY) {
+                eprintln!("failed to stop wl-apply (systemd): {e:?}");
+            }
+            return;
+        }
+        if let Some(child) = st.procs.apply.take() {
             terminate_child(child, "node wl-apply");
+        }
+    }
+
+    fn start_x11_sync(&self) {
+        let st = self.state.lock().unwrap();
+        if !st.systemd {
+            // In non-systemd mode we don't manage x11-sync from tray.
+            return;
+        }
+        if !systemd::node_supports_x11_sync() {
+            eprintln!("multicliprelay-node does not support x11-sync; please upgrade/reinstall binaries (or adjust unit ExecStart)");
+            return;
+        }
+        let _ = systemd::write_env_from_ui_config(&st.cfg);
+        if let Err(e) = systemd::start(systemd::UNIT_X11_SYNC) {
+            eprintln!("failed to start x11-sync (systemd): {e:?}");
+        }
+    }
+
+    fn stop_x11_sync(&self) {
+        let st = self.state.lock().unwrap();
+        if !st.systemd {
+            return;
+        }
+        if let Err(e) = systemd::stop(systemd::UNIT_X11_SYNC) {
+            eprintln!("failed to stop x11-sync (systemd): {e:?}");
         }
     }
 
@@ -201,6 +281,15 @@ impl MultiClipRelayTray {
 
     fn prune_exited(&self) {
         let mut st = self.state.lock().unwrap();
+        if st.systemd {
+            st.status = ServiceStatus {
+                relay: systemd::is_active(systemd::UNIT_RELAY),
+                watch: systemd::is_active(systemd::UNIT_WL_WATCH),
+                apply: systemd::is_active(systemd::UNIT_WL_APPLY),
+                x11: systemd::is_active(systemd::UNIT_X11_SYNC),
+            };
+            return;
+        }
         if let Some(child) = st.procs.relay.as_mut() {
             if let Ok(Some(_)) = child.try_wait() {
                 st.procs.relay = None;
@@ -223,14 +312,28 @@ pub struct AppState {
     cfg: UiConfig,
     procs: Procs,
     opened_count: u64,
+
+    systemd: bool,
+    status: ServiceStatus,
 }
 
 impl AppState {
     fn new(cfg: UiConfig) -> Self {
+        let use_systemd = systemd::available();
+        if use_systemd {
+            let _ = systemd::write_env_from_ui_config(&cfg);
+        }
         Self {
             cfg,
             procs: Procs::default(),
             opened_count: 0,
+            systemd: use_systemd,
+            status: ServiceStatus {
+                relay: use_systemd && systemd::is_active(systemd::UNIT_RELAY),
+                watch: use_systemd && systemd::is_active(systemd::UNIT_WL_WATCH),
+                apply: use_systemd && systemd::is_active(systemd::UNIT_WL_APPLY),
+                x11: use_systemd && systemd::is_active(systemd::UNIT_X11_SYNC),
+            },
         }
     }
 
@@ -239,6 +342,19 @@ impl AppState {
             detect_lang_from_env()
         } else {
             parse_lang_id(&self.cfg.language).unwrap_or_else(detect_lang_from_env)
+        }
+    }
+
+    fn service_status(&self) -> ServiceStatus {
+        if self.systemd {
+            self.status
+        } else {
+            ServiceStatus {
+                relay: self.procs.relay.is_some(),
+                watch: self.procs.watch.is_some(),
+                apply: self.procs.apply.is_some(),
+                x11: false,
+            }
         }
     }
 }
@@ -265,38 +381,44 @@ impl Tray for MultiClipRelayTray {
     fn tool_tip(&self) -> ToolTip {
         let st = self.state.lock().unwrap();
         let lang = st.lang();
-        let relay_on = st.procs.relay.is_some();
-        let watch_on = st.procs.watch.is_some();
-        let apply_on = st.procs.apply.is_some();
+        let ss = st.service_status();
+        let relay_on = ss.relay;
+        let watch_on = ss.watch;
+        let apply_on = ss.apply;
+        let x11_on = ss.x11;
 
-        let (relay_s, watch_s, apply_s) = match lang {
+        let (relay_s, watch_s, apply_s, x11_s) = match lang {
             Lang::ZhCn => (
                 if relay_on { "开" } else { "关" },
                 if watch_on { "开" } else { "关" },
                 if apply_on { "开" } else { "关" },
+                if x11_on { "开" } else { "关" },
             ),
             Lang::En => (
                 if relay_on { "on" } else { "off" },
                 if watch_on { "on" } else { "off" },
                 if apply_on { "on" } else { "off" },
+                if x11_on { "on" } else { "off" },
             ),
         };
 
         let desc = match lang {
             Lang::ZhCn => format!(
-                "{}：\nrelay: {}\nwl-watch: {}\nwl-apply: {}\n\n{}\n",
+                "{}：\nrelay: {}\nwl-watch: {}\nwl-apply: {}\nx11-sync: {}\n\n{}\n",
                 t(lang, K::TooltipStatusLine),
                 relay_s,
                 watch_s,
                 apply_s,
+                x11_s,
                 t(lang, K::TooltipHint)
             ),
             Lang::En => format!(
-                "{}:\nrelay: {}\nwl-watch: {}\nwl-apply: {}\n\n{}\n",
+                "{}:\nrelay: {}\nwl-watch: {}\nwl-apply: {}\nx11-sync: {}\n\n{}\n",
                 t(lang, K::TooltipStatusLine),
                 relay_s,
                 watch_s,
                 apply_s,
+                x11_s,
                 t(lang, K::TooltipHint)
             ),
         };
@@ -312,18 +434,21 @@ impl Tray for MultiClipRelayTray {
     fn menu(&self) -> Vec<ksni::menu::MenuItem<Self>> {
         use ksni::menu::MenuItem;
 
-        let (lang, relay_running, watch_running, apply_running) = {
+        let (lang, relay_running, watch_running, apply_running, x11_running, has_systemd) = {
             let st = self.state.lock().unwrap();
+            let ss = st.service_status();
             (
                 st.lang(),
-                st.procs.relay.is_some(),
-                st.procs.watch.is_some(),
-                st.procs.apply.is_some(),
+                ss.relay,
+                ss.watch,
+                ss.apply,
+                ss.x11,
+                st.systemd,
             )
         };
 
-        let any_running = relay_running || watch_running || apply_running;
-        let all_running = relay_running && watch_running && apply_running;
+        let any_running = relay_running || watch_running || apply_running || x11_running;
+        let all_running = relay_running && watch_running && apply_running && (!has_systemd || x11_running);
 
         vec![
             MenuItem::Standard(StandardItem {
@@ -384,6 +509,18 @@ impl Tray for MultiClipRelayTray {
                 label: t(lang, K::StopApply).into(),
                 enabled: apply_running,
                 activate: Box::new(|this: &mut Self| this.stop_apply()),
+                ..Default::default()
+            }),
+            MenuItem::Standard(StandardItem {
+                label: t(lang, K::StartX11Sync).into(),
+                enabled: has_systemd && !x11_running,
+                activate: Box::new(|this: &mut Self| this.start_x11_sync()),
+                ..Default::default()
+            }),
+            MenuItem::Standard(StandardItem {
+                label: t(lang, K::StopX11Sync).into(),
+                enabled: has_systemd && x11_running,
+                activate: Box::new(|this: &mut Self| this.stop_x11_sync()),
                 ..Default::default()
             }),
             MenuItem::Separator,

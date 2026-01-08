@@ -54,6 +54,7 @@ jobs:
           cp packaging/common/systemd/multicliprelay-relay.service    "$outdir/$pkg/packaging/common/systemd/multicliprelay-relay.service"
           cp packaging/common/systemd/multicliprelay-wl-watch.service "$outdir/$pkg/packaging/common/systemd/multicliprelay-wl-watch.service"
           cp packaging/common/systemd/multicliprelay-wl-apply.service "$outdir/$pkg/packaging/common/systemd/multicliprelay-wl-apply.service"
+          cp packaging/common/systemd/multicliprelay-x11-sync.service "$outdir/$pkg/packaging/common/systemd/multicliprelay-x11-sync.service"
           cp packaging/common/systemd/multicliprelay.env.example "$outdir/$pkg/packaging/common/systemd/multicliprelay.env.example"
           cp README.md "$outdir/$pkg/README.md"
           (cd "$outdir" && tar -czf "${pkg}.tar.gz" "$pkg")

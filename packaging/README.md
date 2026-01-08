@@ -54,12 +54,14 @@ Copy units to your user directory:
 
 - `~/.config/systemd/user/multicliprelay-wl-watch.service`
 - `~/.config/systemd/user/multicliprelay-wl-apply.service`
+- (optional) `~/.config/systemd/user/multicliprelay-x11-sync.service`
 - (optional) `~/.config/systemd/user/multicliprelay-relay.service`
 
 Then reload and enable:
 
 - `systemctl --user daemon-reload`
 - `systemctl --user enable --now multicliprelay-wl-watch.service multicliprelay-wl-apply.service`
+- (optional) `systemctl --user enable --now multicliprelay-x11-sync.service`
 
 Note:
 

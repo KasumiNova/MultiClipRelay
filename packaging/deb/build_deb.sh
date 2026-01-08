@@ -48,6 +48,7 @@ install -m 0644 "${root_dir}/packaging/common/multicliprelay-ui-tray.desktop" "$
 install -m 0644 "${root_dir}/packaging/common/systemd/multicliprelay-relay.service"    "$stage/usr/lib/systemd/user/multicliprelay-relay.service"
 install -m 0644 "${root_dir}/packaging/common/systemd/multicliprelay-wl-watch.service" "$stage/usr/lib/systemd/user/multicliprelay-wl-watch.service"
 install -m 0644 "${root_dir}/packaging/common/systemd/multicliprelay-wl-apply.service" "$stage/usr/lib/systemd/user/multicliprelay-wl-apply.service"
+install -m 0644 "${root_dir}/packaging/common/systemd/multicliprelay-x11-sync.service" "$stage/usr/lib/systemd/user/multicliprelay-x11-sync.service"
 
 install -m 0644 "${root_dir}/README.md" "$stage/usr/share/doc/${name}/README.md"
 install -m 0644 "${root_dir}/packaging/README.md" "$stage/usr/share/doc/${name}/PACKAGING.md"

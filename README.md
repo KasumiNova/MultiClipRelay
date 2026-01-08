@@ -151,6 +151,31 @@ Run:
 cargo run -p ui-tray
 ```
 
+X11 <-> Wayland clipboard sync (Linux)
+
+If you use XWayland-heavy apps (X11 apps on Wayland) and want more consistent clipboard behavior,
+`multicliprelay-node x11-sync` can keep X11 and Wayland clipboards in sync:
+
+- X11 -> Wayland: polling
+- Wayland -> X11: event-driven (wl-paste --watch)
+
+Run (dev):
+
+```bash
+cargo run -p node -- x11-sync
+```
+
+Systemd user services
+
+This repo ships optional systemd user units under `packaging/common/systemd/`:
+
+- `multicliprelay-relay.service`
+- `multicliprelay-wl-watch.service`
+- `multicliprelay-wl-apply.service`
+- `multicliprelay-x11-sync.service`
+
+They read `~/.config/multicliprelay/multicliprelay.env` (see `multicliprelay.env.example`).
+
 The tray menu can:
 
 - open the GTK control panel

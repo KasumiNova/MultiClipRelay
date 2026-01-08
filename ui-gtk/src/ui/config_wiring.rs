@@ -8,6 +8,7 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use crate::config::{load_config, save_config, UiConfig};
 use crate::i18n::{detect_lang_from_env, image_mode_hint_text, parse_lang_id, Lang};
+use crate::systemd;
 
 use super::constants::{DEFAULT_IMAGE_MODE_ID, LANG_AUTO_ID};
 
@@ -18,6 +19,7 @@ pub struct ConfigWidgets {
     pub max_text_spin: gtk4::SpinButton,
     pub max_image_spin: gtk4::SpinButton,
     pub max_file_spin: gtk4::SpinButton,
+    pub x11_poll_spin: gtk4::SpinButton,
     pub language_combo: gtk4::ComboBoxText,
     pub image_mode_combo: gtk4::ComboBoxText,
     pub mode_hint: gtk4::Label,
@@ -57,12 +59,15 @@ pub fn make_save_cfg(cfg_path: PathBuf, ui: ConfigWidgets) -> Rc<dyn Fn()> {
             max_image_bytes: ui.max_image_spin.value() as usize,
             max_file_bytes: ui.max_file_spin.value() as usize,
             image_mode,
+            x11_poll_interval_ms: ui.x11_poll_spin.value() as u64,
             language,
             force_png: None,
         };
         if let Err(e) = save_config(&cfg_path, &cfg) {
             eprintln!("save config failed: {:?}", e);
         }
+        // Best-effort: keep systemd EnvironmentFile in sync.
+        let _ = systemd::write_env_from_ui_config(&cfg);
     })
 }
 
@@ -87,6 +92,7 @@ pub fn connect_config_wiring(ctx: ConfigWiringCtx) {
         max_text_spin,
         max_image_spin,
         max_file_spin,
+        x11_poll_spin,
         language_combo,
         image_mode_combo,
         mode_hint,
@@ -128,6 +134,15 @@ pub fn connect_config_wiring(ctx: ConfigWiringCtx) {
     );
 
     max_file_spin.connect_value_changed(
+        clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
+            if suppress_save_cfg.get() {
+                return;
+            }
+            (save_cfg)();
+        }),
+    );
+
+    x11_poll_spin.connect_value_changed(
         clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
             if suppress_save_cfg.get() {
                 return;
@@ -181,6 +196,8 @@ pub fn connect_config_wiring(ctx: ConfigWiringCtx) {
         @weak room_entry,
         @weak max_text_spin,
         @weak max_image_spin,
+        @weak max_file_spin,
+        @weak x11_poll_spin,
         @weak language_combo,
         @weak image_mode_combo,
         @weak mode_hint
@@ -194,6 +211,7 @@ pub fn connect_config_wiring(ctx: ConfigWiringCtx) {
                     max_text_spin.set_value(cfg.max_text_bytes as f64);
                     max_image_spin.set_value(cfg.max_image_bytes as f64);
                     max_file_spin.set_value(cfg.max_file_bytes as f64);
+                    x11_poll_spin.set_value(cfg.x11_poll_interval_ms as f64);
 
                     suppress_lang_combo.set(true);
                     language_combo.set_active_id(Some(&cfg.language));
@@ -219,6 +237,7 @@ pub fn connect_config_wiring(ctx: ConfigWiringCtx) {
                     mode_hint.set_text(image_mode_hint_text(lang, &mode));
 
                     suppress_save_cfg.set(false);
+                    let _ = systemd::write_env_from_ui_config(&cfg);
                     (update_services_ui)();
                     let _ = log_tx.send(format!("reloaded config: {}", cfg_path.display()));
                 }

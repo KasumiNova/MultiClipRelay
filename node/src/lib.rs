@@ -13,3 +13,4 @@ pub mod paths;
 pub mod suppress;
 pub mod transfer_file;
 pub mod transfer_image;
+pub mod x11_sync;
