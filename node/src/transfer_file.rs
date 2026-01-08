@@ -1,5 +1,6 @@
 use anyhow::Context;
 use std::io::Cursor;
+use std::time::UNIX_EPOCH;
 use std::path::PathBuf;
 use url::Url;
 use walkdir::WalkDir;
@@ -125,24 +126,52 @@ fn common_path_prefix2(a: &PathBuf, b: &PathBuf) -> PathBuf {
     out
 }
 
-fn header_for_dir() -> tar::Header {
+fn unix_mode_or_default(md: Option<&std::fs::Metadata>, default_mode: u32) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(md) = md {
+            return md.permissions().mode() & 0o7777;
+        }
+        default_mode
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = md;
+        default_mode
+    }
+}
+
+fn mtime_secs_or_zero(md: Option<&std::fs::Metadata>) -> u64 {
+    let Some(md) = md else {
+        return 0;
+    };
+    let Ok(t) = md.modified() else {
+        return 0;
+    };
+    t.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn header_for_dir_with(md: Option<&std::fs::Metadata>) -> tar::Header {
     let mut h = tar::Header::new_ustar();
     h.set_entry_type(tar::EntryType::Directory);
     h.set_size(0);
-    h.set_mode(0o755);
-    h.set_mtime(0);
+    h.set_mode(unix_mode_or_default(md, 0o755));
+    h.set_mtime(mtime_secs_or_zero(md));
     h.set_uid(0);
     h.set_gid(0);
     h.set_cksum();
     h
 }
 
-fn header_for_file(len: u64) -> tar::Header {
+fn header_for_file_with(len: u64, md: Option<&std::fs::Metadata>) -> tar::Header {
     let mut h = tar::Header::new_ustar();
     h.set_entry_type(tar::EntryType::Regular);
     h.set_size(len);
-    h.set_mode(0o644);
-    h.set_mtime(0);
+    h.set_mode(unix_mode_or_default(md, 0o644));
+    h.set_mtime(mtime_secs_or_zero(md));
     h.set_uid(0);
     h.set_gid(0);
     h.set_cksum();
@@ -155,7 +184,9 @@ fn append_dir_deterministic(
     archive_dir: &PathBuf,
 ) -> anyhow::Result<()> {
     // Root dir entry.
-    let mut h = header_for_dir();
+    let md_root = std::fs::metadata(fs_dir)
+        .with_context(|| format!("metadata {}", fs_dir.display()))?;
+    let mut h = header_for_dir_with(Some(&md_root));
     h.set_path(archive_dir)
         .with_context(|| format!("set tar dir path {}", archive_dir.display()))?;
     h.set_cksum();
@@ -180,7 +211,9 @@ fn append_dir_deterministic(
         let fs_path = e.path().to_path_buf();
         let archive_path = archive_dir.join(&rel);
         if e.file_type().is_dir() {
-            let mut h = header_for_dir();
+            let md = std::fs::metadata(&fs_path)
+                .with_context(|| format!("metadata {}", fs_path.display()))?;
+            let mut h = header_for_dir_with(Some(&md));
             h.set_path(&archive_path).with_context(|| {
                 format!("set tar dir path {}", archive_path.display())
             })?;
@@ -193,7 +226,7 @@ fn append_dir_deterministic(
                 .with_context(|| format!("metadata {}", fs_path.display()))?;
             let mut f = std::fs::File::open(&fs_path)
                 .with_context(|| format!("open {}", fs_path.display()))?;
-            let mut h = header_for_file(md.len());
+            let mut h = header_for_file_with(md.len(), Some(&md));
             h.set_path(&archive_path).with_context(|| {
                 format!("set tar file path {}", archive_path.display())
             })?;
@@ -220,7 +253,7 @@ fn append_file_deterministic(
         return Ok(());
     }
     let mut f = std::fs::File::open(fs_file).with_context(|| format!("open {}", fs_file.display()))?;
-    let mut h = header_for_file(md.len());
+    let mut h = header_for_file_with(md.len(), Some(&md));
     h.set_path(archive_file)
         .with_context(|| format!("set tar file path {}", archive_file.display()))?;
     h.set_cksum();
@@ -293,7 +326,17 @@ pub fn build_tar_bundle(paths: &[PathBuf]) -> anyhow::Result<Vec<u8>> {
         }
 
         for d in dirs {
-            let mut h = header_for_dir();
+            let fs_dir = if d == PathBuf::from(root_name) {
+                root.clone()
+            } else {
+                let rel = d
+                    .strip_prefix(root_name)
+                    .unwrap_or(d.as_path());
+                root.join(rel)
+            };
+            let md = std::fs::metadata(&fs_dir)
+                .with_context(|| format!("metadata {}", fs_dir.display()))?;
+            let mut h = header_for_dir_with(Some(&md));
             h.set_path(&d)
                 .with_context(|| format!("set tar dir path {}", d.display()))?;
             h.set_cksum();
@@ -565,6 +608,49 @@ mod tests {
         let s = build_uri_list(&vec![p.clone()]);
         let u = Url::from_file_path(&p).unwrap();
         assert_eq!(s, format!("{}\n", u.as_str()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tar_bundle_preserves_file_mtime_seconds() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.txt");
+        std::fs::write(&p, b"hello").unwrap();
+
+        // Set mtime to a stable value.
+        let target_secs: i64 = 1_700_000_000; // ~2023-11
+        unsafe {
+            let cpath = CString::new(p.as_os_str().as_bytes()).unwrap();
+            let ts = [
+                libc::timespec {
+                    tv_sec: target_secs,
+                    tv_nsec: 0,
+                },
+                libc::timespec {
+                    tv_sec: target_secs,
+                    tv_nsec: 0,
+                },
+            ];
+            let rc = libc::utimensat(libc::AT_FDCWD, cpath.as_ptr(), ts.as_ptr(), 0);
+            assert_eq!(rc, 0);
+        }
+
+        let tar = build_tar_bundle(&vec![p.clone()]).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        unpack_tar_bytes(&tar, &out.path().to_path_buf()).unwrap();
+
+        let out_p = out.path().join("a.txt");
+        let md = std::fs::metadata(&out_p).unwrap();
+        let mtime = md
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(mtime, target_secs as i64);
     }
 
     #[test]
