@@ -318,9 +318,9 @@ pub fn build_uri_list(paths: &[PathBuf]) -> String {
             if p.is_dir() && !s.ends_with('/') {
                 s.push('/');
             }
-            // RFC 2483 / text/uri-list commonly uses CRLF line endings; some consumers are picky.
             out.push_str(&s);
-            out.push_str("\r\n");
+            // Many consumers accept LF; CRLF can confuse some clipboard bridges / file managers.
+            out.push('\n');
         }
     }
     out
@@ -551,14 +551,14 @@ mod tests {
     }
 
     #[test]
-    fn build_uri_list_uses_file_scheme_and_crlf() {
+    fn build_uri_list_uses_file_scheme_and_lf() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("a b.txt");
         std::fs::write(&p, b"x").unwrap();
 
         let s = build_uri_list(&vec![p]);
         assert!(s.starts_with("file:///"), "uri list should start with file:/// but got: {s:?}");
-        assert!(s.ends_with("\r\n"), "uri list should end with CRLF but got: {s:?}");
+        assert!(s.ends_with("\n"), "uri list should end with LF but got: {s:?}");
         assert!(
             !s.contains("file:////"),
             "uri list must not contain file://// (too many slashes): {s:?}"
