@@ -58,8 +58,76 @@ pub fn bundle_name_for(paths: &[PathBuf]) -> String {
     format!("multicliprelay-bundle-{}.tar", utils::now_ms())
 }
 
+fn common_path_prefix(paths: &[PathBuf]) -> Option<PathBuf> {
+    if paths.is_empty() {
+        return None;
+    }
+    let mut prefix = paths[0].clone();
+    for p in paths.iter().skip(1) {
+        prefix = common_path_prefix2(&prefix, p);
+        if prefix.as_os_str().is_empty() {
+            break;
+        }
+    }
+    Some(prefix)
+}
+
+fn common_path_prefix2(a: &PathBuf, b: &PathBuf) -> PathBuf {
+    let mut out = PathBuf::new();
+    let mut ita = a.components();
+    let mut itb = b.components();
+    loop {
+        match (ita.next(), itb.next()) {
+            (Some(ca), Some(cb)) if ca == cb => out.push(ca.as_os_str()),
+            _ => break,
+        }
+    }
+    out
+}
+
 pub fn build_tar_bundle(paths: &[PathBuf]) -> anyhow::Result<Vec<u8>> {
     let mut builder = tar::Builder::new(Vec::new());
+
+    // Heuristic: some environments represent "copy folder" as a flat list of files
+    // (no directory entry in the uri-list). If we detect that all selected items are
+    // files under a single directory tree, we preserve their relative paths so the
+    // receiver can reconstruct the folder structure.
+    let mut all_files = true;
+    let mut parent_dirs: Vec<PathBuf> = Vec::new();
+    let mut rel_has_nesting = false;
+    for p in paths {
+        let md = std::fs::metadata(p).with_context(|| format!("metadata {}", p.display()))?;
+        if !md.is_file() {
+            all_files = false;
+            break;
+        }
+        if let Some(parent) = p.parent() {
+            parent_dirs.push(parent.to_path_buf());
+        }
+    }
+
+    let mut tree_root: Option<PathBuf> = None;
+    let mut tree_root_name: Option<String> = None;
+    if all_files && !parent_dirs.is_empty() {
+        if let Some(root) = common_path_prefix(&parent_dirs) {
+            // If any file lives in a subdirectory under root, we consider this a "folder tree".
+            for p in paths {
+                if let Ok(rel) = p.strip_prefix(&root) {
+                    if rel.components().count() > 1 {
+                        rel_has_nesting = true;
+                        break;
+                    }
+                }
+            }
+
+            if rel_has_nesting {
+                if let Some(n) = root.file_name().and_then(|s| s.to_str()) {
+                    tree_root = Some(root.clone());
+                    tree_root_name = Some(n.to_string());
+                }
+            }
+        }
+    }
 
     for p in paths {
         let name = p
@@ -75,6 +143,16 @@ pub fn build_tar_bundle(paths: &[PathBuf]) -> anyhow::Result<Vec<u8>> {
                 .append_dir_all(&name, p)
                 .with_context(|| format!("append dir {}", p.display()))?;
         } else if md.is_file() {
+            if let (Some(root), Some(root_name)) = (&tree_root, &tree_root_name) {
+                if let Ok(rel) = p.strip_prefix(root) {
+                    let archive_name = PathBuf::from(root_name).join(rel);
+                    builder
+                        .append_path_with_name(p, &archive_name)
+                        .with_context(|| format!("append file {}", p.display()))?;
+                    continue;
+                }
+            }
+
             builder
                 .append_path_with_name(p, &name)
                 .with_context(|| format!("append file {}", p.display()))?;
@@ -314,6 +392,30 @@ mod tests {
         // a.txt should exist; sub/b.txt should exist (directory preserved).
         assert!(out.path().join("a.txt").exists());
         assert!(out.path().join("sub").join("b.txt").exists());
+    }
+
+    #[test]
+    fn tar_bundle_preserves_tree_when_only_files_selected() {
+        // Simulate environments that put a folder selection into the clipboard as a list of files.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("folder");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let a = root.join("a.txt");
+        let b = sub.join("b.txt");
+        std::fs::write(&a, b"hello").unwrap();
+        std::fs::write(&b, b"world").unwrap();
+
+        // Clipboard gives us only files, no directory entry.
+        let tar = build_tar_bundle(&vec![a.clone(), b.clone()]).unwrap();
+        assert!(!tar.is_empty());
+
+        let out = tempfile::tempdir().unwrap();
+        unpack_tar_bytes(&tar, &out.path().to_path_buf()).unwrap();
+
+        assert!(out.path().join("folder").join("a.txt").exists());
+        assert!(out.path().join("folder").join("sub").join("b.txt").exists());
     }
 
     #[test]

@@ -1502,7 +1502,11 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                         entries.len()
                     );
                 } else {
-                    let out_path = dir.join(format!("{}_{}", sha8, safe));
+                    // Store under a stable hash directory, but keep the original filename.
+                    // This avoids "sha prefix" polluting the visible filename on the receiving side.
+                    let out_dir = dir.join(&sha8);
+                    tokio::fs::create_dir_all(&out_dir).await.ok();
+                    let out_path = out_dir.join(&safe);
                     tokio::fs::write(&out_path, payload).await.ok();
 
                     // Write clipboard as file URI + plain path.
