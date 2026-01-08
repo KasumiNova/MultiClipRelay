@@ -352,13 +352,10 @@ pub fn build_uri_list(paths: &[PathBuf]) -> String {
     let mut out = String::new();
     for p in paths {
         if let Ok(u) = Url::from_file_path(p) {
-            // Many file managers expect directory URIs to end with '/'.
-            // `Url::from_file_path` does not guarantee that.
-            let mut s = u.as_str().to_string();
-            if p.is_dir() && !s.ends_with('/') {
-                s.push('/');
-            }
-            out.push_str(&s);
+            // NOTE: Do not force a trailing '/'.
+            // Some file managers (notably KDE/Dolphin) may interpret `file:///dir/` as
+            // "copy contents of dir" rather than "copy the dir itself".
+            out.push_str(u.as_str());
             // Many consumers accept LF; CRLF can confuse some clipboard bridges / file managers.
             out.push('\n');
         }
@@ -558,6 +555,16 @@ mod tests {
         let paths = collect_clipboard_paths(s);
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0], PathBuf::from("/home/user/a.txt"));
+    }
+
+    #[test]
+    fn build_uri_list_does_not_force_trailing_slash_for_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("d");
+        std::fs::create_dir_all(&p).unwrap();
+        let s = build_uri_list(&vec![p.clone()]);
+        let u = Url::from_file_path(&p).unwrap();
+        assert_eq!(s, format!("{}\n", u.as_str()));
     }
 
     #[test]

@@ -1642,6 +1642,14 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
                     let gnome_list = format!("copy\n{}", uri_list);
 
                     let items = vec![
+                        (
+                            "text/plain;charset=utf-8".to_string(),
+                            root_name_for_plain.as_bytes().to_vec(),
+                        ),
+                        (
+                            "text/plain".to_string(),
+                            root_name_for_plain.as_bytes().to_vec(),
+                        ),
                         (URI_LIST_MIME.to_string(), uri_list.as_bytes().to_vec()),
                         (
                             GNOME_COPIED_FILES_MIME.to_string(),
