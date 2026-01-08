@@ -4,6 +4,8 @@ pub const APP_DIR_NAME: &str = "multicliprelay";
 pub const FILE_SUPPRESS_KEY: &str = "application/x-multicliprelay-file";
 
 pub const URI_LIST_MIME: &str = "text/uri-list";
+// KDE/Dolphin may offer this alongside (or instead of) text/uri-list.
+pub const KDE_URI_LIST_MIME: &str = "application/x-kde4-urilist";
 pub const GNOME_COPIED_FILES_MIME: &str = "x-special/gnome-copied-files";
 
 // Marker MIME set by wl-apply when it writes clipboard content originating from the relay.

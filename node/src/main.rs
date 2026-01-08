@@ -11,7 +11,10 @@ use tokio::sync::watch;
 use utils::{Kind, Message};
 
 use node::clipboard::{wl_copy, wl_copy_multi, wl_paste};
-use node::consts::{APPLIED_MARKER_MIME, FILE_SUPPRESS_KEY, GNOME_COPIED_FILES_MIME, URI_LIST_MIME};
+use node::consts::{
+    APPLIED_MARKER_MIME, FILE_SUPPRESS_KEY, GNOME_COPIED_FILES_MIME, KDE_URI_LIST_MIME,
+    URI_LIST_MIME,
+};
 use node::hash::sha256_hex;
 use node::history::{record_recv, record_send};
 use node::image_mode::{parse_image_mode, ImageMode};
@@ -464,6 +467,8 @@ async fn wl_watch_hook() -> anyhow::Result<()> {
 
         let chosen = if has(URI_LIST_MIME) {
             URI_LIST_MIME
+        } else if has(KDE_URI_LIST_MIME) {
+            KDE_URI_LIST_MIME
         } else if has(GNOME_COPIED_FILES_MIME) {
             GNOME_COPIED_FILES_MIME
         } else {
@@ -506,7 +511,7 @@ async fn wl_watch_hook() -> anyhow::Result<()> {
         debug(&format!("hook: chosen={}", chosen));
 
         // Publish using the stdin bytes for the chosen type.
-        if chosen == URI_LIST_MIME || chosen == GNOME_COPIED_FILES_MIME {
+        if chosen == URI_LIST_MIME || chosen == KDE_URI_LIST_MIME || chosen == GNOME_COPIED_FILES_MIME {
             // Multiple supervised wl-paste watchers can trigger nearly at the same time.
             // Use a short-lived non-blocking lock to ensure we only process one file event
             // per clipboard change, preventing duplicate sends and feedback-loop amplification.
@@ -538,6 +543,25 @@ async fn wl_watch_hook() -> anyhow::Result<()> {
                 max_file_bytes,
             )
             .await?;
+
+            // File clipboards may also provide a text/plain `file:///...` representation.
+            // Suppress text sends briefly to avoid overriding receiver clipboard with host paths.
+            set_suppress(
+                &ctx.state_dir,
+                &room,
+                "text/plain;charset=utf-8",
+                "*",
+                Duration::from_millis(1500),
+            )
+            .await;
+            set_suppress(
+                &ctx.state_dir,
+                &room,
+                "text/plain",
+                "*",
+                Duration::from_millis(1500),
+            )
+            .await;
             debug("hook: sent file bundle");
             return Ok(());
         }
@@ -846,6 +870,92 @@ async fn wl_watch_poll(
             }
         }
 
+        // files (uri-list / KDE / gnome)
+        let mut list_bytes: Option<Vec<u8>> = None;
+        if let Ok(b) = wl_paste(URI_LIST_MIME).await {
+            if !b.is_empty() {
+                list_bytes = Some(b);
+            }
+        }
+        if list_bytes.is_none() {
+            if let Ok(b) = wl_paste(KDE_URI_LIST_MIME).await {
+                if !b.is_empty() {
+                    list_bytes = Some(b);
+                }
+            }
+        }
+        if list_bytes.is_none() {
+            if let Ok(b) = wl_paste(GNOME_COPIED_FILES_MIME).await {
+                if !b.is_empty() {
+                    list_bytes = Some(b);
+                }
+            }
+        }
+        if let Some(list_bytes) = list_bytes {
+            let paths = collect_clipboard_paths(&list_bytes);
+            // quick de-dupe
+            let mut uniq: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+            for p in paths {
+                uniq.insert(p);
+            }
+            let paths: Vec<PathBuf> = uniq.into_iter().collect();
+
+            let maybe_sha = if paths.is_empty() {
+                None
+            } else {
+                // Cheap pre-check: for single file we can compute sha after reading; for bundles, sha is from tar.
+                // Loop prevention uses the sha of the transmitted payload.
+                if last_file_hash.as_deref().is_some() {
+                    // keep as-is
+                }
+                if let Some(sha) = send_paths_as_file(
+                    &ctx.state_dir,
+                    &ctx.device_id,
+                    room,
+                    relay,
+                    paths,
+                    max_file_bytes,
+                )
+                .await?
+                {
+                    Some(sha)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(sha) = maybe_sha {
+                if last_file_hash.as_deref() != Some(&sha)
+                    && !is_file_suppressed(&ctx.state_dir, room, &sha).await
+                {
+                    last_file_hash = Some(sha);
+                }
+            }
+
+            // File clipboards may also (briefly) provide text/plain with `file:///...`.
+            // Suppress text sends briefly to avoid overriding receiver clipboard with host paths.
+            set_suppress(
+                &ctx.state_dir,
+                room,
+                "text/plain;charset=utf-8",
+                "*",
+                Duration::from_millis(1500),
+            )
+            .await;
+            set_suppress(
+                &ctx.state_dir,
+                room,
+                "text/plain",
+                "*",
+                Duration::from_millis(1500),
+            )
+            .await;
+
+            // Treat file clipboard as dominant for this tick.
+            tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+            continue;
+        }
+
         // text/plain
         if let Ok(text_bytes) = wl_paste("text/plain;charset=utf-8").await {
             if !text_bytes.is_empty() && text_bytes.len() <= max_text_bytes {
@@ -927,62 +1037,6 @@ async fn wl_watch_poll(
             }
         }
 
-        // files (text/uri-list / gnome)
-        let mut list_bytes: Option<Vec<u8>> = None;
-        if let Ok(b) = wl_paste(URI_LIST_MIME).await {
-            if !b.is_empty() {
-                list_bytes = Some(b);
-            }
-        }
-        if list_bytes.is_none() {
-            if let Ok(b) = wl_paste(GNOME_COPIED_FILES_MIME).await {
-                if !b.is_empty() {
-                    list_bytes = Some(b);
-                }
-            }
-        }
-        if let Some(list_bytes) = list_bytes {
-            let paths = collect_clipboard_paths(&list_bytes);
-            // quick de-dupe
-            let mut uniq: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
-            for p in paths {
-                uniq.insert(p);
-            }
-            let paths: Vec<PathBuf> = uniq.into_iter().collect();
-
-            let maybe_sha = if paths.is_empty() {
-                None
-            } else {
-                // Cheap pre-check: for single file we can compute sha after reading; for bundles, sha is from tar.
-                // Loop prevention uses the sha of the transmitted payload.
-                if last_file_hash.as_deref().is_some() {
-                    // keep as-is
-                }
-                if let Some(sha) = send_paths_as_file(
-                    &ctx.state_dir,
-                    &ctx.device_id,
-                    room,
-                    relay,
-                    paths,
-                    max_file_bytes,
-                )
-                .await?
-                {
-                    Some(sha)
-                } else {
-                    None
-                }
-            };
-
-            if let Some(sha) = maybe_sha {
-                if last_file_hash.as_deref() != Some(&sha)
-                    && !is_file_suppressed(&ctx.state_dir, room, &sha).await
-                {
-                    last_file_hash = Some(sha);
-                }
-            }
-        }
-
         tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
     }
 }
@@ -1023,6 +1077,7 @@ async fn wl_watch_evented(
     let mut watch_mimes: Vec<String> = Vec::new();
     watch_mimes.push(URI_LIST_MIME.to_string());
     watch_mimes.push(GNOME_COPIED_FILES_MIME.to_string());
+    watch_mimes.push(KDE_URI_LIST_MIME.to_string());
     watch_mimes.push("text/plain;charset=utf-8".to_string());
     watch_mimes.push("text/plain".to_string());
     for &m in image_mimes().iter() {
@@ -1237,6 +1292,8 @@ async fn wl_publish_current(
 
         let chosen = if has(URI_LIST_MIME) {
             URI_LIST_MIME
+        } else if has(KDE_URI_LIST_MIME) {
+            KDE_URI_LIST_MIME
         } else if has(GNOME_COPIED_FILES_MIME) {
             GNOME_COPIED_FILES_MIME
         } else {
@@ -1288,7 +1345,7 @@ async fn wl_publish_current(
     };
 
     // File selection: read uri-list and send file bytes.
-    if mime == URI_LIST_MIME || mime == GNOME_COPIED_FILES_MIME {
+    if mime == URI_LIST_MIME || mime == KDE_URI_LIST_MIME || mime == GNOME_COPIED_FILES_MIME {
         let list_bytes = match wl_paste(mime).await {
             Ok(b) => b,
             Err(_) => return Ok(()),
@@ -1316,6 +1373,24 @@ async fn wl_publish_current(
             max_file_bytes,
         )
         .await?;
+
+        // Same as hook/poll: avoid a follow-up text/plain `file:///...` overriding the receiver.
+        set_suppress(
+            &ctx.state_dir,
+            room,
+            "text/plain;charset=utf-8",
+            "*",
+            Duration::from_millis(1500),
+        )
+        .await;
+        set_suppress(
+            &ctx.state_dir,
+            room,
+            "text/plain",
+            "*",
+            Duration::from_millis(1500),
+        )
+        .await;
         return Ok(());
     }
 
