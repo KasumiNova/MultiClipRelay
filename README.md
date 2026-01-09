@@ -1,6 +1,8 @@
 MultiClipRelay - minimal clipboard relay prototype
 
-English | 中文（简体）
+Language: [English](#english) | [中文（简体）](#zh-cn)
+
+## English
 
 This workspace contains these crates:
 
@@ -9,6 +11,23 @@ This workspace contains these crates:
 - `node`: client CLI (listen / send-text / wl-watch / wl-apply)
 - `ui-gtk`: GTK4 control panel (Linux)
 - `ui-tray`: tray app (StatusNotifierItem / AppIndicator)
+
+Status / features (current)
+
+- Wayland clipboard sync: text + images + file selections.
+- File/dir clipboard sync (MVP): supports `text/uri-list`, `x-special/gnome-copied-files`, and KDE/Dolphin `application/x-kde4-urilist`.
+- Multi-file/dir transfer uses a tar bundle and preserves basic metadata (e.g. mtime).
+- Loop prevention:
+  - Network-side marker: `application/x-multicliprelay-applied` (local only).
+  - Local X11<->Wayland marker: `application/x-multicliprelay-x11-sync` (payload: `from=x11` / `from=wl`).
+- systemd user services are the recommended “authoritative” background mode; UI apps act as control panels (start/stop/status + logs).
+- `scripts/install.sh` helps install binaries + user units with absolute `ExecStart` paths (avoids accidentally running old `/usr/bin` builds).
+
+See also:
+
+- Packaging and systemd install notes: [packaging/README.md](packaging/README.md)
+- Installer script (dev-friendly): [scripts/install.sh](scripts/install.sh)
+- systemd unit templates: [packaging/common/systemd](packaging/common/systemd)
 
 Quick local test (run in separate terminals):
 
@@ -76,8 +95,8 @@ File clipboard sync (MVP)
 
 MultiClipRelay can sync file clipboard selections too:
 
-- When you copy files in most Wayland apps/file managers, the clipboard usually offers
-	`text/uri-list` (and sometimes `x-special/gnome-copied-files`).
+- When you copy files in Wayland apps/file managers, the clipboard usually offers
+  `text/uri-list` and may also offer `x-special/gnome-copied-files` (GNOME) or `application/x-kde4-urilist` (KDE/Dolphin).
 - `node wl-watch` detects that selection.
 - For a single file: it sends the raw bytes.
 - For multiple files and directories: it collects them and sends a tar bundle.
@@ -113,6 +132,7 @@ This project includes a minimal GTK4 control panel (`ui-gtk`) that can start/sto
 - relay
 - `node wl-watch` (event-driven)
 - `node wl-apply`
+- (optional) `node x11-sync` (X11 <-> Wayland clipboard sync)
 
 It also provides:
 
@@ -124,6 +144,7 @@ It also provides buttons to send test text / test images (png/jpg/webp/gif).
 The UI also includes:
 
 - a lightweight localization switch (Auto / zh-CN / English)
+- language configuration in `ui.toml` (see [UI config](#ui-config))
 - an in-app Help tab explaining image modes and known compatibility issues (notably: some Electron apps may freeze on relayed JPEG MIME offers)
 - a "Reload config" button in the titlebar (re-reads `~/.config/multicliprelay/ui.toml`)
 
@@ -156,8 +177,15 @@ X11 <-> Wayland clipboard sync (Linux)
 If you use XWayland-heavy apps (X11 apps on Wayland) and want more consistent clipboard behavior,
 `multicliprelay-node x11-sync` can keep X11 and Wayland clipboards in sync:
 
-- X11 -> Wayland: polling
-- Wayland -> X11: event-driven (wl-paste --watch)
+- X11 -> Wayland: event-driven (XFixes selection notifications)
+- Wayland -> X11: event-driven trigger (wl-paste --watch) + a full MIME scan on apply to preserve file clipboard targets
+
+Notes:
+
+- The sync uses a local-only marker MIME: `application/x-multicliprelay-x11-sync`.
+  - Payload `from=x11` means the Wayland clipboard content originated from X11.
+  - Payload `from=wl` means the X11 clipboard content originated from Wayland.
+  - This marker is for local loop prevention and should not be forwarded over the network.
 
 Run (dev):
 
@@ -176,6 +204,36 @@ This repo ships optional systemd user units under `packaging/common/systemd/`:
 
 They read `~/.config/multicliprelay/multicliprelay.env` (see `multicliprelay.env.example`).
 
+Related files:
+
+- Example env file: [packaging/common/systemd/multicliprelay.env.example](packaging/common/systemd/multicliprelay.env.example)
+- Unit files: [packaging/common/systemd](packaging/common/systemd)
+
+Tip (dev install):
+
+If you are iterating locally and using systemd user services, consider using the installer script
+to build+install binaries and rewrite unit `ExecStart` to absolute paths, so systemd always runs
+your latest build:
+
+```bash
+./scripts/install.sh
+systemctl --user restart multicliprelay-x11-sync.service
+```
+
+### UI config
+
+The UI apps (`ui-gtk` / `ui-tray`) read config from:
+
+- `~/.config/multicliprelay/ui.toml`
+
+Example template:
+
+- [packaging/common/ui.toml.example](packaging/common/ui.toml.example)
+
+Language selection:
+
+- Set `language = "auto" | "zh-cn" | "en"`.
+
 The tray menu can:
 
 - open the GTK control panel
@@ -186,9 +244,22 @@ It also follows the UI config `language` setting (auto / zh-CN / en) for basic l
 
 ---
 
+<a id="zh-cn"></a>
+
 ## 中文（简体）
 
 MultiClipRelay 是一个极简的剪贴板同步/中继原型（主要面向 Wayland）。
+
+### 当前已完成的功能 / 改进点
+
+- Wayland 剪贴板同步：文本 / 图片 / 文件选择。
+- 文件/目录剪贴板同步（MVP）：支持 `text/uri-list`、`x-special/gnome-copied-files`（GNOME）、`application/x-kde4-urilist`（KDE/Dolphin）。
+- 多文件/目录用 tar bundle 传输，并保留基础元数据（例如 mtime）。
+- 回环抑制：
+  - 网络侧本地 marker：`application/x-multicliprelay-applied`（仅本机使用）。
+  - 本机 X11<->Wayland marker：`application/x-multicliprelay-x11-sync`（payload: `from=x11` / `from=wl`）。
+- 推荐用 systemd --user 作为权威后台；ui-gtk / ui-tray 作为控制面板（启动/停止/状态/日志）。
+- `scripts/install.sh` 可一键安装二进制 + user units，并把 unit 的 `ExecStart` 重写为绝对路径，避免 systemd 跑到旧的 `/usr/bin`。
 
 本仓库是一个 Rust workspace，包含以下 crate：
 
@@ -240,13 +311,12 @@ wl-copy --type text/plain;charset=utf-8 "hello"
 
 MultiClipRelay 也支持同步“复制文件/目录”的剪贴板选择：
 
-- Wayland 下复制文件时，剪贴板通常会提供 `text/uri-list`，部分文件管理器还会提供
-	`x-special/gnome-copied-files`。
+- Wayland 下复制文件时，剪贴板通常会提供 `text/uri-list`，也可能附带 `x-special/gnome-copied-files`（GNOME）或 `application/x-kde4-urilist`（KDE/Dolphin）。
 - `node wl-watch` 会识别这些 MIME：
-	- 单文件：直接发送文件字节
-	- 多文件/目录：收集后打包为 tar bundle 再发送
+  - 单文件：直接发送文件字节
+  - 多文件/目录：收集后打包为 tar bundle 再发送
 - `node wl-apply` 收到后会保存到本地，并把本地 `text/uri-list` 写回剪贴板，方便粘贴到
-	支持“粘贴文件”的应用。
+  支持“粘贴文件”的应用。
 
 注意：
 
@@ -262,6 +332,7 @@ MultiClipRelay 也支持同步“复制文件/目录”的剪贴板选择：
 - relay
 - `node wl-watch`（事件驱动监视）
 - `node wl-apply`
+- （可选）`node x11-sync`（X11 <-> Wayland 剪贴板同步）
 
 同时提供：
 
@@ -272,6 +343,7 @@ MultiClipRelay 也支持同步“复制文件/目录”的剪贴板选择：
 UI 还包含：
 
 - 轻量语言切换（Auto / zh-CN / English）
+- 语言配置见 [UI 配置](#ui-配置)
 - 内置 Help 页面，解释 image-mode 及已知兼容性问题（例如某些 Electron 应用在出现 relayed JPEG MIME offer 时粘贴可能卡死）
 - 标题栏的 “Reload config” 按钮（重新读取 `~/.config/multicliprelay/ui.toml`）
 
@@ -301,3 +373,38 @@ cargo run -p ui-tray
 - 重新加载 `~/.config/multicliprelay/ui.toml`
 
 托盘也会跟随 UI 配置里的 `language`（auto / zh-CN / en）做基础本地化。
+
+### X11 <-> Wayland 剪贴板同步（Linux）
+
+如果你在 Wayland 桌面上仍大量使用 XWayland/X11 应用，`multicliprelay-node x11-sync`
+可以让 X11 与 Wayland 剪贴板更一致：
+
+- X11 -> Wayland：基于 XFixes selection 通知的事件驱动同步
+- Wayland -> X11：`wl-paste --watch` 触发 + 应用时全量扫描 MIME，尽量无损保留 file clipboard targets
+
+说明：
+
+- 同步使用本机 marker：`application/x-multicliprelay-x11-sync`
+  - payload `from=x11`：表示 Wayland 剪贴板来源于 X11
+  - payload `from=wl`：表示 X11 剪贴板来源于 Wayland
+  - 该 marker 仅用于本机回环抑制，不应转发到网络
+
+开发模式运行：
+
+```bash
+cargo run -p node -- x11-sync
+```
+
+### UI 配置
+
+ui-gtk / ui-tray 会读取：
+
+- `~/.config/multicliprelay/ui.toml`
+
+示例模板：
+
+- [packaging/common/ui.toml.example](packaging/common/ui.toml.example)
+
+语言选择：
+
+- 设置 `language = "auto" | "zh-cn" | "en"`。

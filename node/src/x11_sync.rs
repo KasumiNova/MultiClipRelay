@@ -464,9 +464,17 @@ fn read_x11_clipboard_snapshot(
         let a = intern_atom(conn, m)?;
         if atoms.contains(&a) {
             if let Some(b) = convert_selection_get(conn, win, clipboard, a, property)? {
-                if !b.is_empty() && b.len() <= max_text_bytes {
-                    items.push((m.to_string(), b));
+                if b.is_empty() {
+                    continue;
                 }
+                if b.len() > max_text_bytes {
+                    warn!(
+                        "x11->wl: large file mime payload ({} bytes > max_text_bytes={}); still syncing", 
+                        b.len(),
+                        max_text_bytes
+                    );
+                }
+                items.push((m.to_string(), b));
             }
         }
     }
@@ -476,10 +484,18 @@ fn read_x11_clipboard_snapshot(
         let a = intern_atom(conn, m)?;
         if atoms.contains(&a) {
             if let Some(b) = convert_selection_get(conn, win, clipboard, a, property)? {
-                if !b.is_empty() && b.len() <= max_image_bytes {
-                    items.push((m.to_string(), b));
-                    break;
+                if b.is_empty() {
+                    continue;
                 }
+                if b.len() > max_image_bytes {
+                    warn!(
+                        "x11->wl: large image payload ({} bytes > max_image_bytes={}); still syncing", 
+                        b.len(),
+                        max_image_bytes
+                    );
+                }
+                items.push((m.to_string(), b));
+                break;
             }
         }
     }
@@ -494,10 +510,18 @@ fn read_x11_clipboard_snapshot(
     for a in [utf8, text_plain_utf8, text_plain, string_atom] {
         if atoms.contains(&a) {
             if let Some(b) = convert_selection_get(conn, win, clipboard, a, property)? {
-                if !b.is_empty() && b.len() <= max_text_bytes {
-                    text_bytes = Some(b);
-                    break;
+                if b.is_empty() {
+                    continue;
                 }
+                if b.len() > max_text_bytes {
+                    warn!(
+                        "x11->wl: large text payload ({} bytes > max_text_bytes={}); still syncing", 
+                        b.len(),
+                        max_text_bytes
+                    );
+                }
+                text_bytes = Some(b);
+                break;
             }
         }
     }
