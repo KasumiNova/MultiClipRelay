@@ -27,6 +27,9 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # Native Wayland clipboard access (supports offering multiple MIME types for a single selection)
 wl-clipboard-rs = "0.9.3"
 
+# Native X11 clipboard owner + event-driven selection notifications.
+x11rb = { version = "0.13", features = ["xfixes"] }
+
 # Optional debug logging (enabled only when RUST_LOG is set)
 log = "0.4"
 env_logger = "0.11"

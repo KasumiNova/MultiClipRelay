@@ -18,6 +18,8 @@ fn read_wl_clipboard_journal() -> String {
             systemd::UNIT_WL_WATCH,
             "-u",
             systemd::UNIT_WL_APPLY,
+            "-u",
+            systemd::UNIT_X11_SYNC,
             "-n",
             "200",
             "--no-pager",

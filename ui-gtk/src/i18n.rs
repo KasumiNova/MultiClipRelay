@@ -157,8 +157,8 @@ pub fn t(lang: Lang, k: K) -> &'static str {
         (Lang::En, K::BtnSendTestFile) => "Send test file",
         (Lang::ZhCn, K::BtnShowClipTypes) => "查看剪贴板类型",
         (Lang::En, K::BtnShowClipTypes) => "Show clipboard types",
-        (Lang::ZhCn, K::BtnWlClipboardLogs) => "wl-clipboard 日志",
-        (Lang::En, K::BtnWlClipboardLogs) => "wl-clipboard logs",
+        (Lang::ZhCn, K::BtnWlClipboardLogs) => "剪贴板日志",
+        (Lang::En, K::BtnWlClipboardLogs) => "Clipboard logs",
         (Lang::ZhCn, K::BtnClearLogs) => "清空日志",
         (Lang::En, K::BtnClearLogs) => "Clear logs",
         (Lang::ZhCn, K::BtnClearHistory) => "清空历史",
@@ -213,8 +213,8 @@ pub fn t(lang: Lang, k: K) -> &'static str {
         (Lang::ZhCn, K::LabelRelayTcp) => "Relay 连接（TCP）",
         (Lang::En, K::LabelRelayTcp) => "Relay TCP",
 
-        (Lang::ZhCn, K::WindowWlClipboardLogs) => "wl-clipboard 日志（systemd）",
-        (Lang::En, K::WindowWlClipboardLogs) => "wl-clipboard logs (systemd)",
+        (Lang::ZhCn, K::WindowWlClipboardLogs) => "剪贴板日志（systemd）",
+        (Lang::En, K::WindowWlClipboardLogs) => "Clipboard logs (systemd)",
 
         (Lang::ZhCn, K::HistoryEmptyHint) => {
             "（暂无同步记录：开始 wl-watch / wl-apply 后，这里会显示最近的发送/接收历史）"

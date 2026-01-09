@@ -32,15 +32,19 @@ See `packaging/deb/build_deb.sh`.
 
 See `packaging/arch/PKGBUILD` (template).
 
+## Quick local install (recommended for development)
+
+When running via systemd user services, you may accidentally execute an older binary from `/usr/bin`.
+Use the installer script to build and install binaries + user units with absolute `ExecStart` paths.
+
+- User install (no root): `./scripts/install.sh`
+- System binaries (/usr/local, needs sudo): `./scripts/install.sh --system`
+
 ## Security note
 
 The relay protocol is plain TCP with room-based routing. For untrusted networks/public Internet, run it behind a VPN/SSH tunnel or add a TLS/auth layer.
 
 ## systemd user services (recommended for production)
-
-This repo ships example **systemd user units** under `packaging/common/systemd/`.
-
-### Configuration
 
 Create an environment file at:
 
