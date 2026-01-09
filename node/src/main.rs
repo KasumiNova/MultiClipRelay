@@ -25,7 +25,7 @@ use node::transfer_file::{
     build_uri_list, collect_clipboard_paths, send_file, send_paths_as_file, unpack_tar_bytes,
 };
 use node::transfer_image::{image_mimes, send_image, to_png};
-use node::x11_sync::{x11_hook_apply_wayland_to_x11, x11_sync_service, X11SyncOpts};
+use node::x11_sync::{pause_x11_text_sync, x11_hook_apply_wayland_to_x11, x11_sync_service, X11SyncOpts};
 
 // (ImageMode + parsing are in node::image_mode)
 
@@ -544,6 +544,9 @@ async fn wl_watch_hook() -> anyhow::Result<()> {
             )
             .await?;
 
+            // Pause x11-sync text synchronization to prevent it from overriding the file clipboard.
+            pause_x11_text_sync(&ctx.state_dir, Duration::from_millis(2000)).await;
+
             // File clipboards may also provide a text/plain `file:///...` representation.
             // Suppress text sends briefly to avoid overriding receiver clipboard with host paths.
             set_suppress(
@@ -594,6 +597,9 @@ async fn wl_watch_hook() -> anyhow::Result<()> {
                         max_file_bytes,
                     )
                     .await?;
+
+                    // Pause x11-sync text synchronization.
+                    pause_x11_text_sync(&ctx.state_dir, Duration::from_millis(2000)).await;
 
                     // Suppress follow-up text/plain `file:///...` updates.
                     set_suppress(
@@ -976,6 +982,9 @@ async fn wl_watch_poll(
                 }
             };
 
+            // Pause x11-sync text synchronization whenever we handle file clipboard.
+            pause_x11_text_sync(&ctx.state_dir, Duration::from_millis(2000)).await;
+
             if let Some(sha) = maybe_sha {
                 if last_file_hash.as_deref() != Some(&sha)
                     && !is_file_suppressed(&ctx.state_dir, room, &sha).await
@@ -1038,6 +1047,9 @@ async fn wl_watch_poll(
                         {
                             last_file_hash = Some(sha);
                         }
+
+                        // Pause x11-sync text synchronization.
+                        pause_x11_text_sync(&ctx.state_dir, Duration::from_millis(2000)).await;
 
                         set_suppress(
                             &ctx.state_dir,
@@ -1476,6 +1488,9 @@ async fn wl_publish_current(
         )
         .await?;
 
+        // Pause x11-sync text synchronization.
+        pause_x11_text_sync(&ctx.state_dir, Duration::from_millis(2000)).await;
+
         // Same as hook/poll: avoid a follow-up text/plain `file:///...` overriding the receiver.
         set_suppress(
             &ctx.state_dir,
@@ -1545,6 +1560,9 @@ async fn wl_publish_current(
                     max_file_bytes,
                 )
                 .await?;
+
+                // Pause x11-sync text synchronization.
+                pause_x11_text_sync(&ctx.state_dir, Duration::from_millis(2000)).await;
 
                 set_suppress(
                     &ctx.state_dir,

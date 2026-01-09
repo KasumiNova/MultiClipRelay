@@ -9,6 +9,7 @@ use crate::consts::{APPLIED_MARKER_MIME, GNOME_COPIED_FILES_MIME, KDE_URI_LIST_M
 use crate::hash::sha256_hex;
 
 const SUBDIR: &str = "x11-sync";
+const PAUSE_TEXT_SYNC_KEY: &str = "pause_text_sync";
 
 fn state_path(state_dir: &PathBuf, key: &str) -> PathBuf {
     state_dir.join(SUBDIR).join(key)
@@ -28,6 +29,23 @@ async fn state_get(state_dir: &PathBuf, key: &str) -> Option<String> {
 async fn state_set(state_dir: &PathBuf, key: &str, val: &str) {
     let p = state_path(state_dir, key);
     let _ = tokio::fs::write(&p, val).await;
+}
+
+/// Pause x11-sync text synchronization for the specified duration.
+/// Called by wl-watch when it sends file clipboard to prevent x11-sync from overriding.
+pub async fn pause_x11_text_sync(state_dir: &PathBuf, ttl: Duration) {
+    ensure_state_dir(state_dir).await;
+    let expires = utils::now_ms().saturating_add(ttl.as_millis() as u64);
+    state_set(state_dir, PAUSE_TEXT_SYNC_KEY, &expires.to_string()).await;
+}
+
+/// Check if x11-sync text synchronization is currently paused.
+async fn is_text_sync_paused(state_dir: &PathBuf) -> bool {
+    let Some(s) = state_get(state_dir, PAUSE_TEXT_SYNC_KEY).await else {
+        return false;
+    };
+    let exp: u64 = s.parse().unwrap_or(0);
+    utils::now_ms() <= exp
 }
 
 async fn run_output(mut cmd: Command) -> anyhow::Result<Vec<u8>> {
@@ -198,6 +216,12 @@ pub async fn x11_sync_service(opts: X11SyncOpts) -> anyhow::Result<()> {
             };
 
             if !x11_text.is_empty() && x11_text.len() <= opts.max_text_bytes {
+                // Check if wl-watch has signaled us to pause text sync (e.g. during file transfer).
+                if is_text_sync_paused(&opts.state_dir).await {
+                    tokio::time::sleep(opts.poll_interval).await;
+                    continue;
+                }
+
                 // Skip if the text looks like file:// URIs (e.g. copied from a file manager).
                 // These should NOT override Wayland's text/uri-list which has proper file semantics.
                 let text_str = String::from_utf8_lossy(&x11_text);
