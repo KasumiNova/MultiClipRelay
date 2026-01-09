@@ -566,6 +566,58 @@ async fn wl_watch_hook() -> anyhow::Result<()> {
             return Ok(());
         }
 
+        // Some clipboard producers may expose file copies as plain text containing `file:///...`
+        // without offering `text/uri-list` consistently. Treat such payloads as file clipboard.
+        if chosen.starts_with("text/plain") {
+            let mut paths = collect_clipboard_paths(&stored);
+            if !paths.is_empty() {
+                let mut existing: Vec<PathBuf> = Vec::new();
+                for p in paths.drain(..) {
+                    if tokio::fs::metadata(&p).await.is_ok() {
+                        existing.push(p);
+                    }
+                }
+
+                let mut uniq: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+                for p in existing {
+                    uniq.insert(p);
+                }
+                let existing: Vec<PathBuf> = uniq.into_iter().collect();
+
+                if !existing.is_empty() {
+                    let _ = send_paths_as_file(
+                        &ctx.state_dir,
+                        &ctx.device_id,
+                        &room,
+                        &relay,
+                        existing,
+                        max_file_bytes,
+                    )
+                    .await?;
+
+                    // Suppress follow-up text/plain `file:///...` updates.
+                    set_suppress(
+                        &ctx.state_dir,
+                        &room,
+                        "text/plain;charset=utf-8",
+                        "*",
+                        Duration::from_millis(1500),
+                    )
+                    .await;
+                    set_suppress(
+                        &ctx.state_dir,
+                        &room,
+                        "text/plain",
+                        "*",
+                        Duration::from_millis(1500),
+                    )
+                    .await;
+                    debug("hook: text looked like file URIs; sent as file bundle");
+                    return Ok(());
+                }
+            }
+        }
+
         let (send_mime, send_bytes) = if chosen.starts_with("image/") {
             match im {
                 ImageMode::ForcePng => match to_png(&stored) {
@@ -959,6 +1011,56 @@ async fn wl_watch_poll(
         // text/plain
         if let Ok(text_bytes) = wl_paste("text/plain;charset=utf-8").await {
             if !text_bytes.is_empty() && text_bytes.len() <= max_text_bytes {
+                let mut paths = collect_clipboard_paths(&text_bytes);
+                if !paths.is_empty() {
+                    let mut existing: Vec<PathBuf> = Vec::new();
+                    for p in paths.drain(..) {
+                        if tokio::fs::metadata(&p).await.is_ok() {
+                            existing.push(p);
+                        }
+                    }
+                    let mut uniq: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+                    for p in existing {
+                        uniq.insert(p);
+                    }
+                    let existing: Vec<PathBuf> = uniq.into_iter().collect();
+
+                    if !existing.is_empty() {
+                        if let Some(sha) = send_paths_as_file(
+                            &ctx.state_dir,
+                            &ctx.device_id,
+                            room,
+                            relay,
+                            existing,
+                            max_file_bytes,
+                        )
+                        .await?
+                        {
+                            last_file_hash = Some(sha);
+                        }
+
+                        set_suppress(
+                            &ctx.state_dir,
+                            room,
+                            "text/plain;charset=utf-8",
+                            "*",
+                            Duration::from_millis(1500),
+                        )
+                        .await;
+                        set_suppress(
+                            &ctx.state_dir,
+                            room,
+                            "text/plain",
+                            "*",
+                            Duration::from_millis(1500),
+                        )
+                        .await;
+
+                        tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+                        continue;
+                    }
+                }
+
                 let h = sha256_hex(&text_bytes);
                 if last_text_hash.as_deref() != Some(&h)
                     && !is_suppressed(&ctx.state_dir, room, "text/plain;charset=utf-8", &h).await
@@ -1417,6 +1519,52 @@ async fn wl_publish_current(
     }
     if mime.starts_with("image/") && bytes.len() > max_image_bytes {
         return Ok(());
+    }
+
+    if mime.starts_with("text/plain") {
+        let mut paths = collect_clipboard_paths(&bytes);
+        if !paths.is_empty() {
+            let mut existing: Vec<PathBuf> = Vec::new();
+            for p in paths.drain(..) {
+                if tokio::fs::metadata(&p).await.is_ok() {
+                    existing.push(p);
+                }
+            }
+            let mut uniq: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+            for p in existing {
+                uniq.insert(p);
+            }
+            let existing: Vec<PathBuf> = uniq.into_iter().collect();
+            if !existing.is_empty() {
+                let _ = send_paths_as_file(
+                    &ctx.state_dir,
+                    &ctx.device_id,
+                    room,
+                    relay,
+                    existing,
+                    max_file_bytes,
+                )
+                .await?;
+
+                set_suppress(
+                    &ctx.state_dir,
+                    room,
+                    "text/plain;charset=utf-8",
+                    "*",
+                    Duration::from_millis(1500),
+                )
+                .await;
+                set_suppress(
+                    &ctx.state_dir,
+                    room,
+                    "text/plain",
+                    "*",
+                    Duration::from_millis(1500),
+                )
+                .await;
+                return Ok(());
+            }
+        }
     }
 
     let (send_mime, send_bytes) = if mime.starts_with("image/") {
