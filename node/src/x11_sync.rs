@@ -5,6 +5,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use crate::clipboard::{wl_copy, wl_paste};
+use crate::consts::{APPLIED_MARKER_MIME, GNOME_COPIED_FILES_MIME, KDE_URI_LIST_MIME, URI_LIST_MIME};
 use crate::hash::sha256_hex;
 
 const SUBDIR: &str = "x11-sync";
@@ -84,6 +85,17 @@ async fn xclip_clear() {
             let _ = stdin.shutdown().await;
         }
         let _ = child.wait().await;
+    }
+}
+
+async fn wl_list_types() -> String {
+    let out = Command::new("wl-paste")
+        .arg("--list-types")
+        .output()
+        .await;
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => String::new(),
     }
 }
 
@@ -186,6 +198,33 @@ pub async fn x11_sync_service(opts: X11SyncOpts) -> anyhow::Result<()> {
             };
 
             if !x11_text.is_empty() && x11_text.len() <= opts.max_text_bytes {
+                // Skip if the text looks like file:// URIs (e.g. copied from a file manager).
+                // These should NOT override Wayland's text/uri-list which has proper file semantics.
+                let text_str = String::from_utf8_lossy(&x11_text);
+                let looks_like_file_uri = text_str.lines().any(|l| {
+                    let t = l.trim();
+                    t.starts_with("file://") || t.starts_with("file:/")
+                });
+                if looks_like_file_uri {
+                    tokio::time::sleep(opts.poll_interval).await;
+                    continue;
+                }
+
+                // Also skip if Wayland clipboard currently offers file-copy MIMEs.
+                // This prevents X11 text from overriding an active file selection.
+                let wl_types = wl_list_types().await;
+                let wl_has_file_mime = wl_types.lines().any(|l| {
+                    let t = l.trim();
+                    t == URI_LIST_MIME
+                        || t == KDE_URI_LIST_MIME
+                        || t == GNOME_COPIED_FILES_MIME
+                        || t == APPLIED_MARKER_MIME
+                });
+                if wl_has_file_mime {
+                    tokio::time::sleep(opts.poll_interval).await;
+                    continue;
+                }
+
                 let sha = sha256_hex(&x11_text);
                 let wl_text = wl_paste("text/plain").await.unwrap_or_default();
                 if wl_text != x11_text {
