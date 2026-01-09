@@ -1630,24 +1630,63 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
     // Guard against accidentally starting multiple appliers (which can cause confusing race-y clipboard behavior).
     let _lock = acquire_instance_lock(&ctx.state_dir, "wl-apply", room, relay)?;
 
-    let stream = connect(relay).await?;
-    let (mut reader, mut writer) = stream.into_split();
-
-    send_join(&mut writer, &ctx.device_id, room).await?;
-    println!("wl-apply: room='{}' relay='{}'", room, relay);
+    // Heartbeat + reconnect:
+    // - If the TCP connection drops, don't exit cleanly (systemd won't restart on exit 0).
+    // - Periodically send Join as a lightweight heartbeat to keep NAT/stateful firewalls happy.
+    let reconnect_backoff = Duration::from_millis(800);
+    let heartbeat_interval = Duration::from_secs(20);
 
     // Simple loop-prevention: skip if we applied same sha recently.
     let mut last_applied_sha: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
     loop {
-        let len = match reader.read_u32().await {
-            Ok(l) => l as usize,
-            Err(_) => break,
+        let stream = match connect(relay).await {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("wl-apply: connect failed: {e:?}");
+                tokio::time::sleep(reconnect_backoff).await;
+                continue;
+            }
         };
-        let mut buf = vec![0u8; len];
-        reader.read_exact(&mut buf).await.context("read payload")?;
-        let msg = Message::from_bytes(&buf);
+
+        let (mut reader, mut writer) = stream.into_split();
+        if let Err(e) = send_join(&mut writer, &ctx.device_id, room).await {
+            log::warn!("wl-apply: send join failed: {e:?}");
+            tokio::time::sleep(reconnect_backoff).await;
+            continue;
+        }
+        println!("wl-apply: room='{}' relay='{}'", room, relay);
+
+        let mut hb = tokio::time::interval(heartbeat_interval);
+        hb.tick().await;
+
+        loop {
+            let len: usize = tokio::select! {
+                _ = hb.tick() => {
+                    if let Err(e) = send_join(&mut writer, &ctx.device_id, room).await {
+                        log::warn!("wl-apply: heartbeat failed (will reconnect): {e:?}");
+                        break;
+                    }
+                    continue;
+                }
+                res = reader.read_u32() => {
+                    match res {
+                        Ok(l) => l as usize,
+                        Err(e) => {
+                            log::warn!("wl-apply: read failed (will reconnect): {e:?}");
+                            break;
+                        }
+                    }
+                }
+            };
+
+            let mut buf = vec![0u8; len];
+            if let Err(e) = reader.read_exact(&mut buf).await {
+                log::warn!("wl-apply: read payload failed (will reconnect): {e:?}");
+                break;
+            }
+            let msg = Message::from_bytes(&buf);
 
         // don't apply our own
         if msg.device_id == ctx.device_id {
@@ -2082,7 +2121,9 @@ async fn wl_apply(ctx: &Ctx, room: &str, relay: &str, image_mode: ImageMode) -> 
             Kind::Join => {}
         }
     }
-    Ok(())
+
+        tokio::time::sleep(reconnect_backoff).await;
+    }
 }
 
 // Tests live in the dedicated modules (e.g. transfer_file).

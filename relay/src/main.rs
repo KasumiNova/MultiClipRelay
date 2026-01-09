@@ -1,6 +1,7 @@
 use anyhow::{bail, Context};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
@@ -69,12 +70,19 @@ async fn handle_conn(socket: TcpStream, rooms: SharedRooms) -> anyhow::Result<()
     });
 
     // read loop
+    // If a peer goes away without FIN/RST (e.g. network loss), we may not notice promptly.
+    // A conservative idle timeout plus client heartbeat keeps the room membership fresh.
+    let idle_timeout = Duration::from_secs(120);
     let mut registered_room: Option<String> = None;
     loop {
         // read len
-        let len = match reader.read_u32().await {
-            Ok(l) => l as usize,
-            Err(_) => break,
+        let len = match tokio::time::timeout(idle_timeout, reader.read_u32()).await {
+            Ok(Ok(l)) => l as usize,
+            Ok(Err(_)) => break,
+            Err(_) => {
+                eprintln!("connection idle timeout ({}s), closing", idle_timeout.as_secs());
+                break;
+            }
         };
         let mut buf = vec![0u8; len];
         reader.read_exact(&mut buf).await.context("read payload")?;
