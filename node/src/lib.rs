@@ -11,7 +11,14 @@ pub mod image_mode;
 pub mod net;
 pub mod paths;
 pub mod suppress;
+#[path = "transfer/file.rs"]
 pub mod transfer_file;
+
+#[path = "transfer/image.rs"]
 pub mod transfer_image;
+
+#[path = "x11/sync/mod.rs"]
 pub mod x11_sync;
+
+#[path = "x11/native.rs"]
 pub mod x11_native;
