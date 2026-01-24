@@ -302,6 +302,12 @@ async fn main() -> anyhow::Result<()> {
 
             ensure_bin("wl-paste").await?;
 
+            // Global lock (independent of --state-dir):
+            // Some users may run x11-sync with different state_dir (or via systemd + manual run),
+            // which bypasses the per-state-dir lock and leads to multiple sync processes
+            // fighting over clipboard ownership.
+            let _global_lock = acquire_global_instance_lock("x11-sync")?;
+
             // Guard against multiple instances (spawns background wl-paste watchers).
             let _lock = acquire_instance_lock(&ctx.state_dir, "x11-sync", "local", "x11")?;
 
@@ -389,6 +395,42 @@ async fn main() -> anyhow::Result<()> {
             x11_hook_apply_wayland_to_x11(&ctx.state_dir, &kind, sample).await;
         }
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn acquire_global_instance_lock(name: &str) -> anyhow::Result<File> {
+    use std::os::unix::io::AsRawFd;
+
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+
+    let uid = unsafe { libc::geteuid() };
+    let lock_name = format!("multicliprelay_{}_uid={}.lock", safe_for_filename(name), uid);
+    let lock_path = dir.join(lock_name);
+
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("open global lock {}", lock_path.display()))?;
+
+    let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            anyhow::bail!("{} already running (global lock busy): {}", name, lock_path.display());
+        }
+        return Err(anyhow::Error::new(e)).context("flock(global)");
+    }
+
+    Ok(f)
+}
+
+#[cfg(not(unix))]
+fn acquire_global_instance_lock(_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
