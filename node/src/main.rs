@@ -320,7 +320,8 @@ async fn main() -> anyhow::Result<()> {
                     .arg(kind)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null());
+                    .stderr(std::process::Stdio::null())
+                    .kill_on_drop(true);
 
                 // Ensure watcher dies with parent.
                 #[cfg(unix)]
@@ -366,17 +367,26 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Commands::X11Hook { kind, max_bytes } => {
-            // Read stdin fully (wl-paste provides the selection data).
-            let mut buf = Vec::new();
-            tokio::io::stdin()
-                .take(max_bytes as u64 + 1)
-                .read_to_end(&mut buf)
-                .await
-                .ok();
-            if buf.len() > max_bytes {
-                return Ok(());
+            // IMPORTANT:
+            // 这里不要阻塞式 read_to_end 等待 EOF。
+            // wl-paste 在某些 clipboard provider / 大 payload 场景下可能会卡住，
+            // 进而导致 x11-hook 长时间挂起并堆积多个进程，最后出现互相抢剪贴板/桌面假死。
+            //
+            // 对我们来说 x11-hook 只是“触发信号”，真正读取 Wayland 剪贴板发生在 x11-sync service 内。
+            // 因此这里做一次“带超时的小读”即可（也能让 wl-paste 早点触发 SIGPIPE/结束本次传输）。
+
+            let _cap = std::cmp::min(max_bytes, 64 * 1024);
+            let mut tmp = [0u8; 4096];
+            let mut sample: Vec<u8> = Vec::new();
+            let read_res = tokio::time::timeout(Duration::from_millis(50), async {
+                tokio::io::stdin().read(&mut tmp).await
+            })
+            .await;
+            if let Ok(Ok(n)) = read_res {
+                sample.extend_from_slice(&tmp[..n]);
             }
-            x11_hook_apply_wayland_to_x11(&ctx.state_dir, &kind, buf).await;
+
+            x11_hook_apply_wayland_to_x11(&ctx.state_dir, &kind, sample).await;
         }
     }
     Ok(())
