@@ -194,15 +194,18 @@ pub async fn x11_sync_service(opts: X11SyncOpts) -> anyhow::Result<()> {
             maybe = rx.recv() => {
                 let Some(snap) = maybe else { break; };
 
-                // Coalesce to latest snapshot. We either run immediately (if allowed), or defer.
+                // Coalesce to latest snapshot. Always overwrite any older pending snapshot.
+                pending_x11_to_wl = Some(snap);
+
+                // We either run immediately (if allowed), or keep it pending.
                 let now = Instant::now();
                 if limiter.allow(now) {
-                    match tokio::time::timeout(task_timeout, run_x11_to_wl_once(snap, &mut last_hash)).await {
-                        Ok(()) => {}
-                        Err(_) => warn!("x11-sync guard: x11->wl task timed out after {:?}", task_timeout),
+                    if let Some(snap) = pending_x11_to_wl.take() {
+                        match tokio::time::timeout(task_timeout, run_x11_to_wl_once(snap, &mut last_hash)).await {
+                            Ok(()) => {}
+                            Err(_) => warn!("x11-sync guard: x11->wl task timed out after {:?}", task_timeout),
+                        }
                     }
-                } else {
-                    pending_x11_to_wl = Some(snap);
                 }
             }
             recv = wl_sock.recv_from(&mut wl_buf) => {
