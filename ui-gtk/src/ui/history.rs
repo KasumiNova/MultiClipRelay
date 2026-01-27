@@ -536,6 +536,7 @@ pub fn make_history_table(lang: Lang, columns_cfg: &BTreeMap<String, bool>) -> H
             Lang::En => "Open",
         });
         btn.add_css_class("flat");
+        btn.add_css_class("mcr-compact-btn");
         btn.set_valign(gtk4::Align::Center);
         btn.set_vexpand(false);
         btn.connect_clicked(|b| {

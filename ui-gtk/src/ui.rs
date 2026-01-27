@@ -87,6 +87,13 @@ pub fn build_ui(app: &gtk4::Application) {
     padding: 4px 10px;
 }
 
+/* Make small in-cell action buttons not inflate row height. */
+.mcr-compact-btn {
+    padding: 1px 8px;
+    min-height: 0;
+    min-width: 0;
+}
+
 /* Force consistent row height across all columns. */
 columnview row,
 columnview listview row {
