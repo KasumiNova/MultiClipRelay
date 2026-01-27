@@ -442,6 +442,7 @@ pub fn list_files_recursively(dir: &PathBuf, max_items: usize) -> Vec<PathBuf> {
 
 pub async fn send_file(
     local_device_id: &str,
+    local_device_name: &str,
     room: &str,
     file: &PathBuf,
     relay: &str,
@@ -461,11 +462,18 @@ pub async fn send_file(
 
     let stream = connect(relay).await?;
     let mut msg = Message::new_file(local_device_id, room, &name, TAR_MIME, tar_bytes);
+    let local_name_opt = if local_device_name.trim().is_empty() {
+        None
+    } else {
+        Some(local_device_name.to_string())
+    };
+    msg.sender_name = local_name_opt.clone();
     msg.sha256 = Some(sha.clone());
     send_frame(stream, msg.to_bytes()).await?;
 
     record_send(
         local_device_id,
+        local_name_opt,
         room,
         relay,
         Kind::File,
@@ -483,6 +491,7 @@ pub async fn send_file(
 pub async fn send_paths_as_file(
     state_dir: &PathBuf,
     local_device_id: &str,
+    local_device_name: &str,
     room: &str,
     relay: &str,
     paths: Vec<PathBuf>,
@@ -517,11 +526,18 @@ pub async fn send_paths_as_file(
 
     let stream = connect(relay).await?;
     let mut msg = Message::new_file(local_device_id, room, &name, TAR_MIME, tar_bytes);
+    let local_name_opt = if local_device_name.trim().is_empty() {
+        None
+    } else {
+        Some(local_device_name.to_string())
+    };
+    msg.sender_name = local_name_opt.clone();
     msg.sha256 = Some(sha.clone());
     send_frame(stream, msg.to_bytes()).await?;
 
     record_send(
         local_device_id,
+        local_name_opt,
         room,
         relay,
         Kind::File,

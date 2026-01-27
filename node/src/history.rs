@@ -10,7 +10,11 @@ pub struct HistoryEvent {
     pub room: String,
     pub relay: String,
     pub local_device_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_device_name: Option<String>,
     pub remote_device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_device_name: Option<String>,
     pub kind: String,
     pub mime: Option<String>,
     pub name: Option<String>,
@@ -60,6 +64,7 @@ fn kind_to_string(k: &Kind) -> String {
 
 pub async fn record_send(
     local_device_id: &str,
+    local_device_name: Option<String>,
     room: &str,
     relay: &str,
     kind: Kind,
@@ -74,7 +79,9 @@ pub async fn record_send(
         room: room.to_string(),
         relay: relay.to_string(),
         local_device_id: local_device_id.to_string(),
+        local_device_name,
         remote_device_id: None,
+        remote_device_name: None,
         kind: kind_to_string(&kind),
         mime,
         name,
@@ -84,14 +91,22 @@ pub async fn record_send(
     .await;
 }
 
-pub async fn record_recv(local_device_id: &str, room: &str, relay: &str, msg: &Message) {
+pub async fn record_recv(
+    local_device_id: &str,
+    local_device_name: Option<String>,
+    room: &str,
+    relay: &str,
+    msg: &Message,
+) {
     append_history(HistoryEvent {
         ts_ms: utils::now_ms(),
         dir: "recv".to_string(),
         room: room.to_string(),
         relay: relay.to_string(),
         local_device_id: local_device_id.to_string(),
+        local_device_name,
         remote_device_id: Some(msg.device_id.clone()),
+        remote_device_name: msg.sender_name.clone(),
         kind: kind_to_string(&msg.kind),
         mime: msg.mime.clone(),
         name: msg.name.clone(),

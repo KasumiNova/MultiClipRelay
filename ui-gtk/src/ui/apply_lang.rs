@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::i18n::{help_text, image_mode_hint_text, populate_image_mode_combo, t, Lang, K};
 
 use super::constants::{
-    DEFAULT_IMAGE_MODE_ID, LANG_AUTO_ID, PAGE_CONTROL, PAGE_HELP, PAGE_HISTORY, PAGE_LOGS,
+    DEFAULT_IMAGE_MODE_ID, LANG_AUTO_ID, PAGE_ACTIVITY, PAGE_CONTROL, PAGE_HELP,
 };
 
 #[derive(Clone)]
@@ -24,9 +24,13 @@ pub struct ApplyLangCtx {
     pub help_buf: gtk4::TextBuffer,
 
     pub clear_logs_btn: gtk4::Button,
-    pub wl_logs_btn: gtk4::Button,
     pub clear_history_btn: gtk4::Button,
     pub reload_btn: gtk4::Button,
+
+    // Activity sub-tabs
+    pub tab_history_lbl: gtk4::Label,
+    pub tab_app_logs_lbl: gtk4::Label,
+    pub tab_clipboard_logs_lbl: gtk4::Label,
 
     // Labels
     pub lbl_relay: gtk4::Label,
@@ -73,14 +77,11 @@ pub fn make_apply_lang(ctx: ApplyLangCtx) -> Rc<dyn Fn(Lang)> {
         if let Some(w) = ctx.stack.child_by_name(PAGE_CONTROL) {
             ctx.stack.page(&w).set_title(t(lang, K::TabControl));
         }
-        if let Some(w) = ctx.stack.child_by_name(PAGE_LOGS) {
-            ctx.stack.page(&w).set_title(t(lang, K::TabLogs));
-        }
         if let Some(w) = ctx.stack.child_by_name(PAGE_HELP) {
             ctx.stack.page(&w).set_title(t(lang, K::TabHelp));
         }
-        if let Some(w) = ctx.stack.child_by_name(PAGE_HISTORY) {
-            ctx.stack.page(&w).set_title(t(lang, K::TabHistory));
+        if let Some(w) = ctx.stack.child_by_name(PAGE_ACTIVITY) {
+            ctx.stack.page(&w).set_title(t(lang, K::TabActivity));
         }
 
         // Labels
@@ -112,9 +113,13 @@ pub fn make_apply_lang(ctx: ApplyLangCtx) -> Rc<dyn Fn(Lang)> {
         ctx.show_clip_types.set_label(t(lang, K::BtnShowClipTypes));
 
         ctx.clear_logs_btn.set_label(t(lang, K::BtnClearLogs));
-        ctx.wl_logs_btn.set_label(t(lang, K::BtnWlClipboardLogs));
         ctx.clear_history_btn.set_label(t(lang, K::BtnClearHistory));
         ctx.reload_btn.set_label(t(lang, K::BtnReloadConfig));
+
+        ctx.tab_history_lbl.set_text(t(lang, K::SubTabHistory));
+        ctx.tab_app_logs_lbl.set_text(t(lang, K::SubTabAppLogs));
+        ctx.tab_clipboard_logs_lbl
+            .set_text(t(lang, K::SubTabClipboardLogs));
 
         // Language combo labels (keep active id)
         ctx.suppress_lang_combo.set(true);

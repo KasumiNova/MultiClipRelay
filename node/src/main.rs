@@ -32,6 +32,7 @@ mod cmd_wl_watch;
 struct Ctx {
     state_dir: PathBuf,
     device_id: String,
+    device_name: String,
 }
 
 #[derive(Parser)]
@@ -45,8 +46,32 @@ struct Cli {
     #[arg(long, global = true)]
     device_id: Option<String>,
 
+    /// Human-friendly device name (defaults to env MCR_NAME or USER@HOSTNAME).
+    #[arg(long, global = true)]
+    name: Option<String>,
+
     #[command(subcommand)]
     cmd: Commands,
+}
+
+fn default_device_name() -> String {
+    if let Ok(v) = std::env::var("MCR_NAME") {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return v;
+        }
+    }
+
+    let user = std::env::var("USER")
+        .ok()
+        .or_else(|| std::env::var("LOGNAME").ok())
+        .unwrap_or_else(|| "user".to_string());
+    let host = std::env::var("HOSTNAME").ok().unwrap_or_default();
+    if host.trim().is_empty() {
+        user
+    } else {
+        format!("{}@{}", user, host)
+    }
 }
 
 #[derive(Subcommand)]
@@ -199,9 +224,11 @@ async fn main() -> anyhow::Result<()> {
         Some(id) => id,
         None => get_or_create_device_id(&state_dir).await?,
     };
+    let device_name = cli.name.unwrap_or_else(default_device_name);
     let ctx = Ctx {
         state_dir,
         device_id,
+        device_name,
     };
 
     match cli.cmd {
@@ -215,7 +242,7 @@ async fn main() -> anyhow::Result<()> {
             image_mode,
         } => {
             let im = parse_image_mode(&image_mode)?;
-            send_image(&ctx.device_id, &room, &file, &relay, max_bytes, im).await?;
+            send_image(&ctx.device_id, &ctx.device_name, &room, &file, &relay, max_bytes, im).await?;
             println!("sent image to room {}", room);
         }
         Commands::SendFile {
@@ -223,7 +250,7 @@ async fn main() -> anyhow::Result<()> {
             file,
             relay,
             max_file_bytes,
-        } => send_file(&ctx.device_id, &room, &file, &relay, max_file_bytes).await?,
+        } => send_file(&ctx.device_id, &ctx.device_name, &room, &file, &relay, max_file_bytes).await?,
         Commands::WlWatch {
             room,
             relay,
@@ -551,7 +578,7 @@ async fn listen_mode(ctx: &Ctx, room: &str, relay: &str) -> anyhow::Result<()> {
     let (reader, mut writer) = stream.into_split();
 
     // Send a Join message so the relay can register us into the room.
-    send_join(&mut writer, &ctx.device_id, room).await?;
+    send_join(&mut writer, &ctx.device_id, &ctx.device_name, room).await?;
 
     // spawn reader
     tokio::spawn(async move {
@@ -569,12 +596,14 @@ async fn listen_mode(ctx: &Ctx, room: &str, relay: &str) -> anyhow::Result<()> {
 async fn send_text(ctx: &Ctx, room: &str, text: &str, relay: &str) -> anyhow::Result<()> {
     let stream = connect(relay).await?;
     let mut msg = Message::new_text(&ctx.device_id, room, text);
+    msg.sender_name = Some(ctx.device_name.clone());
     let sha = sha256_hex(msg.payload.as_deref().unwrap_or_default());
     msg.sha256 = Some(sha.clone());
     let buf = msg.to_bytes();
     send_frame(stream, buf).await?;
     record_send(
         &ctx.device_id,
+        Some(ctx.device_name.clone()),
         room,
         relay,
         Kind::Text,

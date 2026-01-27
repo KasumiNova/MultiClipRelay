@@ -15,6 +15,17 @@ use node::suppress::{set_file_suppress, set_suppress};
 use node::transfer_file::{build_uri_list, unpack_tar_bytes};
 use node::transfer_image::to_png;
 
+fn image_ext_from_mime(mime: &str) -> Option<&'static str> {
+    match mime {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/jpg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
+}
+
 pub(super) async fn run_wl_apply(
     ctx: &super::Ctx,
     room: &str,
@@ -45,7 +56,7 @@ pub(super) async fn run_wl_apply(
         };
 
         let (mut reader, mut writer) = stream.into_split();
-        if let Err(e) = send_join(&mut writer, &ctx.device_id, room).await {
+        if let Err(e) = send_join(&mut writer, &ctx.device_id, &ctx.device_name, room).await {
             log::warn!("wl-apply: send join failed: {e:?}");
             tokio::time::sleep(reconnect_backoff).await;
             continue;
@@ -58,7 +69,7 @@ pub(super) async fn run_wl_apply(
         loop {
             let len: usize = tokio::select! {
                 _ = hb.tick() => {
-                    if let Err(e) = send_join(&mut writer, &ctx.device_id, room).await {
+                    if let Err(e) = send_join(&mut writer, &ctx.device_id, &ctx.device_name, room).await {
                         log::warn!("wl-apply: heartbeat failed (will reconnect): {e:?}");
                         break;
                     }
@@ -97,7 +108,7 @@ pub(super) async fn run_wl_apply(
                 Kind::Text => {
                     if let Some(payload) = msg.payload.as_deref() {
                         wl_copy("text/plain;charset=utf-8", payload).await.ok();
-                        record_recv(&ctx.device_id, room, relay, &msg).await;
+                        record_recv(&ctx.device_id, Some(ctx.device_name.clone()), room, relay, &msg).await;
                         if let Some(sha) = msg.sha256.as_deref() {
                             set_suppress(
                                 &ctx.state_dir,
@@ -115,14 +126,37 @@ pub(super) async fn run_wl_apply(
                 }
                 Kind::Image => {
                     if let Some(payload) = msg.payload.as_deref() {
-                        record_recv(&ctx.device_id, room, relay, &msg).await;
+                        record_recv(&ctx.device_id, Some(ctx.device_name.clone()), room, relay, &msg).await;
                         let mime = msg.mime.clone().unwrap_or_else(|| "image/png".to_string());
+
+                        // Best-effort: persist the received image so the UI can preview it.
+                        // Path convention: $XDG_DATA_HOME/multicliprelay/received/<sha8>/image.<ext>
+                        let sha = msg.sha256.clone().unwrap_or_else(|| sha256_hex(payload));
+                        let sha8 = first_8(&sha).to_string();
+                        let dir = received_dir().join(&sha8);
+                        tokio::fs::create_dir_all(&dir).await.ok();
+                        if let Some(ext) = image_ext_from_mime(&mime) {
+                            let p = dir.join(format!("image.{ext}"));
+                            // ignore errors (preview is best-effort)
+                            let _ = tokio::fs::write(&p, payload).await;
+                        } else {
+                            let p = dir.join("image.bin");
+                            let _ = tokio::fs::write(&p, payload).await;
+                        }
+
                         match image_mode {
                             ImageMode::ForcePng => {
                                 let (apply_mime, apply_bytes) = match to_png(payload) {
                                     Ok(png) => ("image/png".to_string(), png),
                                     Err(_) => (mime.clone(), payload.to_vec()),
                                 };
+
+                                // If we generated a png fallback, persist it too for easier preview.
+                                if apply_mime == "image/png" {
+                                    let p = dir.join("image.png");
+                                    let _ = tokio::fs::write(&p, &apply_bytes).await;
+                                }
+
                                 let _ = wl_copy(&apply_mime, &apply_bytes).await;
                                 if let Some(sha) = msg.sha256.as_deref() {
                                     set_suppress(
@@ -242,7 +276,7 @@ pub(super) async fn run_wl_apply(
                     let Some(payload) = msg.payload.as_deref() else {
                         continue;
                     };
-                    record_recv(&ctx.device_id, room, relay, &msg).await;
+                    record_recv(&ctx.device_id, Some(ctx.device_name.clone()), room, relay, &msg).await;
                     let sha = msg.sha256.clone().unwrap_or_else(|| sha256_hex(payload));
                     if last_applied_sha
                         .get(FILE_SUPPRESS_KEY)

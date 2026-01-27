@@ -1,5 +1,6 @@
 use anyhow::Context;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,6 +20,12 @@ pub struct UiConfig {
 
     #[serde(default = "default_language")]
     pub language: String,
+
+    /// History table column visibility map.
+    /// Key = column id (e.g. "peer"), value = visible.
+    /// Empty map means "use built-in defaults".
+    #[serde(default)]
+    pub history_columns: BTreeMap<String, bool>,
 
     // Legacy field (v0): existed as `force_png = true/false`.
     // Keep it for backward-compatible loading.
@@ -54,6 +61,7 @@ impl Default for UiConfig {
             image_mode: default_image_mode(),
             x11_poll_interval_ms: default_x11_poll_interval_ms(),
             language: default_language(),
+            history_columns: BTreeMap::new(),
             force_png: None,
         }
     }

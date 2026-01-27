@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 
-use crate::config::{load_config, save_config, UiConfig};
+use crate::config::{load_config, save_config};
 use crate::i18n::{detect_lang_from_env, image_mode_hint_text, parse_lang_id, Lang};
 use crate::systemd;
 
@@ -42,6 +42,9 @@ pub struct ConfigWiringCtx {
 
 pub fn make_save_cfg(cfg_path: PathBuf, ui: ConfigWidgets) -> Rc<dyn Fn()> {
     Rc::new(move || {
+        // Preserve any fields not present on the config form (e.g. column visibility).
+        let mut cfg = load_config(&cfg_path).unwrap_or_default();
+
         let image_mode = ui
             .image_mode_combo
             .active_id()
@@ -52,17 +55,16 @@ pub fn make_save_cfg(cfg_path: PathBuf, ui: ConfigWidgets) -> Rc<dyn Fn()> {
             .active_id()
             .map(|s| s.to_string())
             .unwrap_or_else(|| LANG_AUTO_ID.to_string());
-        let cfg = UiConfig {
-            relay_addr: ui.relay_entry.text().to_string(),
-            room: ui.room_entry.text().to_string(),
-            max_text_bytes: ui.max_text_spin.value() as usize,
-            max_image_bytes: ui.max_image_spin.value() as usize,
-            max_file_bytes: ui.max_file_spin.value() as usize,
-            image_mode,
-            x11_poll_interval_ms: ui.x11_poll_spin.value() as u64,
-            language,
-            force_png: None,
-        };
+
+        cfg.relay_addr = ui.relay_entry.text().to_string();
+        cfg.room = ui.room_entry.text().to_string();
+        cfg.max_text_bytes = ui.max_text_spin.value() as usize;
+        cfg.max_image_bytes = ui.max_image_spin.value() as usize;
+        cfg.max_file_bytes = ui.max_file_spin.value() as usize;
+        cfg.image_mode = image_mode;
+        cfg.x11_poll_interval_ms = ui.x11_poll_spin.value() as u64;
+        cfg.language = language;
+        cfg.force_png = None;
         if let Err(e) = save_config(&cfg_path, &cfg) {
             eprintln!("save config failed: {:?}", e);
         }

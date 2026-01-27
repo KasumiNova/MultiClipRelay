@@ -5,6 +5,7 @@ use crate::hash::sha256_hex;
 use crate::history::record_send;
 use crate::image_mode::ImageMode;
 use crate::net::{connect, send_frame};
+use crate::paths::{first_8, received_dir};
 
 use utils::{Kind, Message};
 
@@ -47,8 +48,20 @@ pub fn to_png(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(out)
 }
 
+fn image_ext_from_mime(mime: &str) -> Option<&'static str> {
+    match mime {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/jpg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
+}
+
 pub async fn send_image(
     local_device_id: &str,
+    local_device_name: &str,
     room: &str,
     file: &PathBuf,
     relay: &str,
@@ -73,13 +86,30 @@ pub async fn send_image(
 
     let stream = connect(relay).await?;
     let mut msg = Message::new_image(local_device_id, room, send_mime, send_bytes);
+    let local_name_opt = if local_device_name.trim().is_empty() {
+        None
+    } else {
+        Some(local_device_name.to_string())
+    };
+    msg.sender_name = local_name_opt.clone();
     let sha = sha256_hex(msg.payload.as_deref().unwrap_or_default());
     msg.sha256 = Some(sha.clone());
+
+    // Best-effort: persist sent image so local UI can preview it too.
+    if let Some(payload) = msg.payload.as_deref() {
+        let sha8 = first_8(&sha).to_string();
+        let dir = received_dir().join(&sha8);
+        tokio::fs::create_dir_all(&dir).await.ok();
+        let ext = image_ext_from_mime(send_mime).unwrap_or("bin");
+        let p = dir.join(format!("image.{ext}"));
+        let _ = tokio::fs::write(&p, payload).await;
+    }
 
     send_frame(stream, msg.to_bytes()).await?;
 
     record_send(
         local_device_id,
+        local_name_opt,
         room,
         relay,
         Kind::Image,

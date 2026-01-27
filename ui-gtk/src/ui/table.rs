@@ -53,6 +53,12 @@ pub fn make_tabbed_table(columns: &[ColumnSpec]) -> TabbedTable {
         let factory = gtk4::SignalListItemFactory::new();
         let ellipsize = c.ellipsize;
         factory.connect_setup(move |_, list_item| {
+            let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            root.set_hexpand(true);
+            root.set_halign(gtk4::Align::Fill);
+            root.set_valign(gtk4::Align::Fill);
+            root.add_css_class("mcr-cell");
+
             let label = gtk4::Label::builder()
                 .xalign(0.0)
                 .selectable(true)
@@ -64,7 +70,10 @@ pub fn make_tabbed_table(columns: &[ColumnSpec]) -> TabbedTable {
                 })
                 .build();
             label.add_css_class("monospace");
-            list_item.set_child(Some(&label));
+            label.set_hexpand(true);
+            label.set_halign(gtk4::Align::Fill);
+            root.append(&label);
+            list_item.set_child(Some(&root));
         });
 
         factory.connect_bind(move |_, list_item| {
@@ -72,7 +81,10 @@ pub fn make_tabbed_table(columns: &[ColumnSpec]) -> TabbedTable {
             let Ok(obj) = item.downcast::<gtk4::StringObject>() else { return; };
             let text = parse_cols(obj.string().as_str(), idx);
             let Some(child) = list_item.child() else { return; };
-            let Ok(label) = child.downcast::<gtk4::Label>() else { return; };
+            let Ok(root) = child.downcast::<gtk4::Box>() else { return; };
+
+            let Some(first) = root.first_child() else { return; };
+            let Ok(label) = first.downcast::<gtk4::Label>() else { return; };
             label.set_text(&text);
         });
 

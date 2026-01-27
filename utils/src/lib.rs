@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+const MSG_V2_MAGIC: &[u8; 4] = b"MCR2";
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Kind {
     Text,
@@ -13,6 +15,9 @@ pub enum Kind {
 pub struct Message {
     pub event_id: String,
     pub device_id: String,
+    /// Optional device display name (human-friendly), set by the sender.
+    /// This is distinct from `name` (which is used for file/display name of the *payload*).
+    pub sender_name: Option<String>,
     pub ts: u64,
     pub kind: Kind,
     pub room: String,
@@ -24,11 +29,29 @@ pub struct Message {
     pub sha256: Option<String>,
 }
 
+/// Wire-compatible old message (v1) without `sender_name`.
+///
+/// We keep it only for backward-compatible decoding.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct MessageV1 {
+    pub event_id: String,
+    pub device_id: String,
+    pub ts: u64,
+    pub kind: Kind,
+    pub room: String,
+    pub mime: Option<String>,
+    pub name: Option<String>,
+    pub payload: Option<Vec<u8>>,
+    pub size: usize,
+    pub sha256: Option<String>,
+}
+
 impl Message {
     pub fn new_join(device_id: &str, room: &str) -> Self {
         Self {
             event_id: Uuid::new_v4().to_string(),
             device_id: device_id.to_string(),
+            sender_name: None,
             ts: crate::now_ms(),
             kind: Kind::Join,
             room: room.to_string(),
@@ -44,6 +67,7 @@ impl Message {
         Self {
             event_id: Uuid::new_v4().to_string(),
             device_id: device_id.to_string(),
+            sender_name: None,
             ts: crate::now_ms(),
             kind: Kind::Text,
             room: room.to_string(),
@@ -60,6 +84,7 @@ impl Message {
         Self {
             event_id: Uuid::new_v4().to_string(),
             device_id: device_id.to_string(),
+            sender_name: None,
             ts: crate::now_ms(),
             kind: Kind::Image,
             room: room.to_string(),
@@ -76,6 +101,7 @@ impl Message {
         Self {
             event_id: Uuid::new_v4().to_string(),
             device_id: device_id.to_string(),
+            sender_name: None,
             ts: crate::now_ms(),
             kind: Kind::File,
             room: room.to_string(),
@@ -88,11 +114,33 @@ impl Message {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("serialize message")
+        let body = bincode::serialize(self).expect("serialize message");
+        let mut out = Vec::with_capacity(MSG_V2_MAGIC.len() + body.len());
+        out.extend_from_slice(MSG_V2_MAGIC);
+        out.extend_from_slice(&body);
+        out
     }
 
     pub fn from_bytes(b: &[u8]) -> Self {
-        bincode::deserialize(b).expect("deserialize message")
+        if b.len() >= MSG_V2_MAGIC.len() && &b[..MSG_V2_MAGIC.len()] == MSG_V2_MAGIC {
+            return bincode::deserialize(&b[MSG_V2_MAGIC.len()..]).expect("deserialize message v2");
+        }
+
+        // Backward compat: v1 had no magic prefix.
+        let v1: MessageV1 = bincode::deserialize(b).expect("deserialize message v1");
+        Message {
+            event_id: v1.event_id,
+            device_id: v1.device_id,
+            sender_name: None,
+            ts: v1.ts,
+            kind: v1.kind,
+            room: v1.room,
+            mime: v1.mime,
+            name: v1.name,
+            payload: v1.payload,
+            size: v1.size,
+            sha256: v1.sha256,
+        }
     }
 }
 
@@ -112,12 +160,35 @@ mod tests {
     fn message_file_roundtrip_preserves_name() {
         let mut m = Message::new_file("dev", "room", "hello.txt", "text/plain", b"hi".to_vec());
         m.sha256 = Some("abc".to_string());
+        m.sender_name = Some("alice".to_string());
         let b = m.to_bytes();
         let m2 = Message::from_bytes(&b);
         assert!(matches!(m2.kind, Kind::File));
         assert_eq!(m2.name.as_deref(), Some("hello.txt"));
+        assert_eq!(m2.sender_name.as_deref(), Some("alice"));
         assert_eq!(m2.mime.as_deref(), Some("text/plain"));
         assert_eq!(m2.payload.as_deref(), Some(b"hi".as_slice()));
         assert_eq!(m2.sha256.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn message_v1_is_backward_compatible() {
+        let v1 = MessageV1 {
+            event_id: "e".to_string(),
+            device_id: "dev".to_string(),
+            ts: 1,
+            kind: Kind::Text,
+            room: "room".to_string(),
+            mime: Some("text/plain".to_string()),
+            name: None,
+            payload: Some(b"hi".to_vec()),
+            size: 2,
+            sha256: None,
+        };
+        let b = bincode::serialize(&v1).expect("serialize v1");
+        let m = Message::from_bytes(&b);
+        assert_eq!(m.device_id, "dev");
+        assert_eq!(m.sender_name, None);
+        assert!(matches!(m.kind, Kind::Text));
     }
 }

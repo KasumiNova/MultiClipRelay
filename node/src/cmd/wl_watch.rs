@@ -15,9 +15,30 @@ use node::hash::sha256_hex;
 use node::history::record_send;
 use node::image_mode::{parse_image_mode, ImageMode};
 use node::net::{connect, send_frame, send_join};
+use node::paths::{first_8, received_dir};
 use node::suppress::{is_file_suppressed, is_suppressed, set_suppress};
 use node::transfer_file::{collect_clipboard_paths, send_paths_as_file};
 use node::transfer_image::{image_mimes, to_png};
+
+fn image_ext_from_mime(mime: &str) -> Option<&'static str> {
+    match mime {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/jpg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
+}
+
+async fn persist_image_best_effort(sha: &str, mime: &str, bytes: &[u8]) {
+    let sha8 = first_8(sha).to_string();
+    let dir = received_dir().join(&sha8);
+    tokio::fs::create_dir_all(&dir).await.ok();
+    let ext = image_ext_from_mime(mime).unwrap_or("bin");
+    let p = dir.join(format!("image.{ext}"));
+    let _ = tokio::fs::write(&p, bytes).await;
+}
 
 pub(super) async fn wl_watch_hook() -> anyhow::Result<()> {
     let debug_path = std::env::var("MCR_HOOK_DEBUG_PATH").ok();
@@ -59,7 +80,12 @@ pub(super) async fn wl_watch_hook() -> anyhow::Result<()> {
     let image_mode = std::env::var("MCR_IMAGE_MODE").unwrap_or_else(|_| "force-png".to_string());
     let im = parse_image_mode(&image_mode)?;
 
-    let ctx = super::Ctx { state_dir, device_id };
+    let device_name = super::default_device_name();
+    let ctx = super::Ctx {
+        state_dir,
+        device_id,
+        device_name,
+    };
 
     // If we were triggered by a specific watcher, wl-paste pipes that type to stdin.
     // Prefer using stdin bytes directly (avoids nested wl-paste calls which can be flaky).
@@ -186,6 +212,7 @@ pub(super) async fn wl_watch_hook() -> anyhow::Result<()> {
             let _ = send_paths_as_file(
                 &ctx.state_dir,
                 &ctx.device_id,
+                &ctx.device_name,
                 &room,
                 &relay,
                 paths,
@@ -237,6 +264,7 @@ pub(super) async fn wl_watch_hook() -> anyhow::Result<()> {
                     let _ = send_paths_as_file(
                         &ctx.state_dir,
                         &ctx.device_id,
+                        &ctx.device_name,
                         &room,
                         &relay,
                         existing,
@@ -288,6 +316,10 @@ pub(super) async fn wl_watch_hook() -> anyhow::Result<()> {
             return Ok(());
         }
 
+        if send_mime.starts_with("image/") {
+            persist_image_best_effort(&sha, send_mime, &send_bytes).await;
+        }
+
         debug(&format!("hook: sending mime={} bytes={}", send_mime, send_bytes.len()));
 
         let stream = match connect(&relay).await {
@@ -305,6 +337,9 @@ pub(super) async fn wl_watch_hook() -> anyhow::Result<()> {
         } else {
             Message::new_image(&ctx.device_id, &room, send_mime, send_bytes)
         };
+        if !ctx.device_name.trim().is_empty() {
+            msg.sender_name = Some(ctx.device_name.clone());
+        }
         msg.sha256 = Some(sha);
         if let Err(e) = send_frame(stream, msg.to_bytes()).await {
             debug(&format!("hook: send_frame failed: {:#}", e));
@@ -312,6 +347,7 @@ pub(super) async fn wl_watch_hook() -> anyhow::Result<()> {
         }
         record_send(
             &ctx.device_id,
+            Some(ctx.device_name.clone()),
             &room,
             &relay,
             msg.kind,
@@ -396,7 +432,7 @@ async fn wl_watch_poll(
 ) -> anyhow::Result<()> {
     let stream = connect(relay).await?;
     let (_reader, mut writer) = stream.into_split();
-    send_join(&mut writer, &ctx.device_id, room).await?;
+    send_join(&mut writer, &ctx.device_id, &ctx.device_name, room).await?;
     println!("wl-watch(poll): room='{}' relay='{}'", room, relay);
 
     let mut last_text_hash: Option<String> = None;
@@ -456,6 +492,7 @@ async fn wl_watch_poll(
                 if let Some(sha) = send_paths_as_file(
                     &ctx.state_dir,
                     &ctx.device_id,
+                    &ctx.device_name,
                     room,
                     relay,
                     paths,
@@ -522,6 +559,7 @@ async fn wl_watch_poll(
                         if let Some(sha) = send_paths_as_file(
                             &ctx.state_dir,
                             &ctx.device_id,
+                            &ctx.device_name,
                             room,
                             relay,
                             existing,
@@ -561,12 +599,16 @@ async fn wl_watch_poll(
                     let mut msg = Message::new_text(&ctx.device_id, room, "");
                     msg.payload = Some(text_bytes);
                     msg.size = msg.payload.as_ref().map(|p| p.len()).unwrap_or(0);
+                    if !ctx.device_name.trim().is_empty() {
+                        msg.sender_name = Some(ctx.device_name.clone());
+                    }
                     msg.sha256 = Some(h.clone());
                     let buf = msg.to_bytes();
                     writer.write_u32(buf.len() as u32).await?;
                     writer.write_all(&buf).await?;
                     record_send(
                         &ctx.device_id,
+                        Some(ctx.device_name.clone()),
                         room,
                         relay,
                         Kind::Text,
@@ -608,13 +650,18 @@ async fn wl_watch_poll(
                 if last_img_hash.get(send_mime).map(|s| s.as_str()) != Some(&h)
                     && !is_suppressed(&ctx.state_dir, room, send_mime, &h).await
                 {
+                    persist_image_best_effort(&h, send_mime, &send_bytes).await;
                     let mut msg = Message::new_image(&ctx.device_id, room, send_mime, send_bytes);
+                    if !ctx.device_name.trim().is_empty() {
+                        msg.sender_name = Some(ctx.device_name.clone());
+                    }
                     msg.sha256 = Some(h.clone());
                     let buf = msg.to_bytes();
                     writer.write_u32(buf.len() as u32).await?;
                     writer.write_all(&buf).await?;
                     record_send(
                         &ctx.device_id,
+                        Some(ctx.device_name.clone()),
                         room,
                         relay,
                         Kind::Image,
@@ -962,6 +1009,7 @@ pub(super) async fn wl_publish_current(
         let _ = send_paths_as_file(
             &ctx.state_dir,
             &ctx.device_id,
+            &ctx.device_name,
             room,
             relay,
             paths,
@@ -1032,6 +1080,7 @@ pub(super) async fn wl_publish_current(
                 let _ = send_paths_as_file(
                     &ctx.state_dir,
                     &ctx.device_id,
+                    &ctx.device_name,
                     room,
                     relay,
                     existing,
@@ -1077,6 +1126,10 @@ pub(super) async fn wl_publish_current(
         return Ok(());
     }
 
+    if send_mime.starts_with("image/") {
+        persist_image_best_effort(&sha, send_mime, &send_bytes).await;
+    }
+
     let stream = connect(relay).await?;
     let mut msg = if send_mime.starts_with("text/") {
         let mut m = Message::new_text(&ctx.device_id, room, "");
@@ -1086,10 +1139,14 @@ pub(super) async fn wl_publish_current(
     } else {
         Message::new_image(&ctx.device_id, room, send_mime, send_bytes)
     };
+    if !ctx.device_name.trim().is_empty() {
+        msg.sender_name = Some(ctx.device_name.clone());
+    }
     msg.sha256 = Some(sha);
     send_frame(stream, msg.to_bytes()).await?;
     record_send(
         &ctx.device_id,
+        Some(ctx.device_name.clone()),
         room,
         relay,
         msg.kind,

@@ -103,7 +103,8 @@ async fn handle_conn(socket: TcpStream, rooms: SharedRooms) -> anyhow::Result<()
             continue;
         }
         let room = msg.room.clone();
-        let out = msg.to_bytes();
+        // Forward original bytes as-is (avoid re-serialization changing the wire format).
+        let out = buf;
         let mut map = rooms.lock().await;
         if let Some(list) = map.get_mut(&room) {
             // Drop only closed channels (a full channel should not kick the client).

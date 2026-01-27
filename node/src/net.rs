@@ -19,9 +19,14 @@ pub async fn send_frame(mut stream: TcpStream, buf: Vec<u8>) -> anyhow::Result<(
 pub async fn send_join(
     writer: &mut tokio::net::tcp::OwnedWriteHalf,
     device_id: &str,
+    device_name: &str,
     room: &str,
 ) -> anyhow::Result<()> {
-    let join = utils::Message::new_join(device_id, room).to_bytes();
+    let mut join = utils::Message::new_join(device_id, room);
+    if !device_name.trim().is_empty() {
+        join.sender_name = Some(device_name.to_string());
+    }
+    let join = join.to_bytes();
     writer
         .write_u32(join.len() as u32)
         .await

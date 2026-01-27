@@ -2,12 +2,13 @@ mod wl_clipboard_logs;
 mod table;
 use glib::clone;
 use gtk4::prelude::*;
+use gtk4::gdk;
 
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 
-use crate::config::{config_path, load_config};
+use crate::config::{config_path, load_config, save_config};
 use crate::i18n::{
     detect_lang_from_env, help_text, image_mode_hint_text, parse_lang_id,
     populate_image_mode_combo, t, Lang, K,
@@ -28,9 +29,9 @@ mod timers;
 use self::apply_lang::{make_apply_lang, ApplyLangCtx};
 use self::config_wiring::connect_config_wiring;
 use self::connection::install_relay_probe;
-use self::constants::{LANG_AUTO_ID, PAGE_CONTROL, PAGE_HELP, PAGE_HISTORY, PAGE_LOGS};
+use self::constants::{LANG_AUTO_ID, PAGE_ACTIVITY, PAGE_CONTROL, PAGE_HELP};
 use self::diagnostics::connect_diagnostics_handlers;
-use self::history::install_history_refresh;
+use self::history::{install_history_refresh, make_history_table};
 use self::services::{
     connect_service_handlers, make_update_services_ui, ServiceConfigInputs, ServiceWidgets,
 };
@@ -75,6 +76,40 @@ pub fn build_ui(app: &gtk4::Application) {
     }
 
     let (log_tx, log_rx) = mpsc::channel::<String>();
+
+        // App CSS (row zebra stripes for ColumnView-based tables).
+        if let Some(display) = gdk::Display::default() {
+                let provider = gtk4::CssProvider::new();
+                // Keep it subtle so selection highlight still stands out.
+                // Use theme colors so it works in both light and dark themes.
+                let css = r#"
+.mcr-cell {
+    padding: 4px 10px;
+}
+
+/* Zebra stripes: color the whole row (not individual cells) to avoid a chopped look. */
+columnview row:nth-child(odd),
+columnview listview row:nth-child(odd) {
+    background-color: transparent;
+}
+
+columnview row:nth-child(even),
+columnview listview row:nth-child(even) {
+    background-color: alpha(@theme_fg_color, 0.028);
+}
+
+columnview row:hover:not(:selected),
+columnview listview row:hover:not(:selected) {
+    background-color: alpha(@theme_fg_color, 0.050);
+}
+"#;
+                provider.load_from_data(css);
+                gtk4::style_context_add_provider_for_display(
+                        &display,
+                        &provider,
+                        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+        }
 
     let window = gtk4::ApplicationWindow::builder()
         .application(app)
@@ -342,37 +377,96 @@ pub fn build_ui(app: &gtk4::Application) {
     control_scroll.set_margin_start(12);
     control_scroll.set_margin_end(12);
 
-    // --- Logs view (tabs) ---
+    // --- Activity view (sub-tabs) ---
+    // 1) Sync history
+    let history_table = make_history_table(initial_lang, &cfg.history_columns);
+    let clear_history = gtk4::Button::with_label(t(initial_lang, K::BtnClearHistory));
+
+    // Column visibility settings (persisted in ui.toml).
+    let columns_btn = gtk4::MenuButton::builder()
+        .label(match initial_lang {
+            Lang::ZhCn => "列",
+            Lang::En => "Columns",
+        })
+        .build();
+    columns_btn.add_css_class("flat");
+
+    let columns_pop = gtk4::Popover::new();
+    let columns_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    columns_box.set_margin_top(8);
+    columns_box.set_margin_bottom(8);
+    columns_box.set_margin_start(10);
+    columns_box.set_margin_end(10);
+
+    // Friendly labels for column ids.
+    let col_label = move |id: &str| -> String {
+        match (initial_lang, id) {
+            (Lang::ZhCn, "time") => "时间".into(),
+            (Lang::ZhCn, "dir") => "方向".into(),
+            (Lang::ZhCn, "name") => "名称".into(),
+            (Lang::ZhCn, "peer") => "peer(id)".into(),
+            (Lang::ZhCn, "kind") => "类型".into(),
+            (Lang::ZhCn, "bytes") => "大小".into(),
+            (Lang::ZhCn, "extra") => "详情".into(),
+            (Lang::ZhCn, "preview") => "预览".into(),
+            (_, other) => other.to_string(),
+        }
+    };
+
+    for (id, col) in history_table.columns.iter() {
+        let id2 = id.clone();
+        let col2 = col.clone();
+        let cfg_path2 = cfg_path.clone();
+
+        let cb = gtk4::CheckButton::with_label(&col_label(&id2));
+        cb.set_active(col2.is_visible());
+        cb.connect_toggled(move |c| {
+            let v = c.is_active();
+            col2.set_visible(v);
+
+            // Best-effort persistence.
+            let mut cfg2 = load_config(&cfg_path2).unwrap_or_default();
+            cfg2.history_columns.insert(id2.clone(), v);
+            let _ = save_config(&cfg_path2, &cfg2);
+        });
+        columns_box.append(&cb);
+    }
+
+    columns_pop.set_child(Some(&columns_box));
+    columns_btn.set_popover(Some(&columns_pop));
+
+    let history_actions = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    history_actions.set_margin_top(2);
+    history_actions.set_margin_bottom(2);
+    history_actions.set_margin_start(4);
+    history_actions.set_margin_end(4);
+    history_actions.append(&clear_history);
+    let history_actions_spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    history_actions_spacer.set_hexpand(true);
+    history_actions.append(&history_actions_spacer);
+    history_actions.append(&columns_btn);
+
+    let history_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    history_box.append(&history_actions);
+    history_box.append(&history_table.scroll);
+
+    // 2) App logs
     let app_logs = make_tabbed_table(&[
         ColumnSpec { title: "time", fixed_width: Some(140), expand: false, resizable: true, ellipsize: true },
         ColumnSpec { title: "src", fixed_width: Some(170), expand: false, resizable: true, ellipsize: true },
         ColumnSpec { title: "message", fixed_width: None, expand: true, resizable: true, ellipsize: false },
     ]);
 
-    let logs_notebook = gtk4::Notebook::new();
-    logs_notebook.set_vexpand(true);
-    logs_notebook.set_hexpand(true);
-
     let clear_logs = gtk4::Button::with_label(t(initial_lang, K::BtnClearLogs));
     clear_logs.connect_clicked(clone!(@strong app_logs => move |_| {
         app_logs.store.remove_all();
     }));
 
-    let wl_logs_btn = gtk4::Button::with_label(t(initial_lang, K::BtnWlClipboardLogs));
-    wl_logs_btn.set_sensitive(use_systemd);
-    wl_logs_btn.connect_clicked(clone!(@weak logs_notebook => move |_| {
-        logs_notebook.set_current_page(Some(1));
-    }));
+    let logs_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    logs_box.append(&clear_logs);
+    logs_box.append(&app_logs.scroll);
 
-    let logs_actions = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    logs_actions.append(&clear_logs);
-    logs_actions.append(&wl_logs_btn);
-
-    let app_logs_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-    app_logs_box.append(&logs_actions);
-    app_logs_box.append(&app_logs.scroll);
-    logs_notebook.append_page(&app_logs_box, Some(&gtk4::Label::new(Some("App logs"))));
-
+    // 3) System clipboard logs (systemd journal)
     let (clip_logs_widget, clip_logs_alive) = build_wl_clipboard_logs_widget(initial_lang);
     window.connect_close_request(clone!(@strong clip_logs_alive => @default-return glib::Propagation::Proceed, move |_| {
         clip_logs_alive.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -381,33 +475,25 @@ pub fn build_ui(app: &gtk4::Application) {
 
     let clip_logs_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
     clip_logs_box.append(&clip_logs_widget);
-    logs_notebook.append_page(&clip_logs_box, Some(&gtk4::Label::new(Some("Clipboard"))));
 
-    let logs_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-    logs_box.set_margin_top(12);
-    logs_box.set_margin_bottom(12);
-    logs_box.set_margin_start(12);
-    logs_box.set_margin_end(12);
-    logs_box.append(&logs_notebook);
+    let activity_notebook = gtk4::Notebook::new();
+    activity_notebook.set_vexpand(true);
+    activity_notebook.set_hexpand(true);
 
-    // --- History view ---
-    let history_table = make_tabbed_table(&[
-        ColumnSpec { title: "time", fixed_width: Some(190), expand: false, resizable: true, ellipsize: true },
-        ColumnSpec { title: "dir", fixed_width: Some(70), expand: false, resizable: true, ellipsize: true },
-        ColumnSpec { title: "peer", fixed_width: Some(140), expand: false, resizable: true, ellipsize: true },
-        ColumnSpec { title: "kind", fixed_width: Some(90), expand: false, resizable: true, ellipsize: true },
-        ColumnSpec { title: "bytes", fixed_width: Some(80), expand: false, resizable: true, ellipsize: true },
-        ColumnSpec { title: "extra", fixed_width: None, expand: true, resizable: true, ellipsize: false },
-    ]);
+    let tab_history_lbl = gtk4::Label::new(Some(t(initial_lang, K::SubTabHistory)));
+    let tab_app_logs_lbl = gtk4::Label::new(Some(t(initial_lang, K::SubTabAppLogs)));
+    let tab_clip_logs_lbl = gtk4::Label::new(Some(t(initial_lang, K::SubTabClipboardLogs)));
 
-    let clear_history = gtk4::Button::with_label(t(initial_lang, K::BtnClearHistory));
-    let history_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-    history_box.set_margin_top(12);
-    history_box.set_margin_bottom(12);
-    history_box.set_margin_start(12);
-    history_box.set_margin_end(12);
-    history_box.append(&clear_history);
-    history_box.append(&history_table.scroll);
+    activity_notebook.append_page(&history_box, Some(&tab_history_lbl));
+    activity_notebook.append_page(&logs_box, Some(&tab_app_logs_lbl));
+    activity_notebook.append_page(&clip_logs_box, Some(&tab_clip_logs_lbl));
+
+    let activity_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    activity_box.set_margin_top(12);
+    activity_box.set_margin_bottom(12);
+    activity_box.set_margin_start(12);
+    activity_box.set_margin_end(12);
+    activity_box.append(&activity_notebook);
 
     // --- Help view ---
     let help_buf = gtk4::TextBuffer::new(None);
@@ -464,9 +550,12 @@ pub fn build_ui(app: &gtk4::Application) {
         mode_hint: mode_hint.clone(),
         help_buf: help_buf.clone(),
         clear_logs_btn: clear_logs.clone(),
-            wl_logs_btn: wl_logs_btn.clone(),
         clear_history_btn: clear_history.clone(),
         reload_btn: reload_btn.clone(),
+
+        tab_history_lbl: tab_history_lbl.clone(),
+        tab_app_logs_lbl: tab_app_logs_lbl.clone(),
+        tab_clipboard_logs_lbl: tab_clip_logs_lbl.clone(),
         lbl_relay: lbl_relay.clone(),
         lbl_room: lbl_room.clone(),
         lbl_max_text: lbl_max_text.clone(),
@@ -581,11 +670,10 @@ pub fn build_ui(app: &gtk4::Application) {
         t(initial_lang, K::TabControl),
     );
     stack.add_titled(
-        &history_box,
-        Some(PAGE_HISTORY),
-        t(initial_lang, K::TabHistory),
+        &activity_box,
+        Some(PAGE_ACTIVITY),
+        t(initial_lang, K::TabActivity),
     );
-    stack.add_titled(&logs_box, Some(PAGE_LOGS), t(initial_lang, K::TabLogs));
     stack.add_titled(&help_scroll, Some(PAGE_HELP), t(initial_lang, K::TabHelp));
 
     // Initialize all i18n texts for labels created without initial text.

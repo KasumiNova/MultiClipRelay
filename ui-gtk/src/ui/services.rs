@@ -159,6 +159,7 @@ pub fn connect_service_handlers(
             image_mode: combo_active_id_or(&image_mode_combo_c, DEFAULT_IMAGE_MODE_ID),
             x11_poll_interval_ms: spin_usize(&x11_poll_spin_for_cfg) as u64,
             language: "auto".to_string(),
+            history_columns: Default::default(),
             force_png: None,
         }
     });
