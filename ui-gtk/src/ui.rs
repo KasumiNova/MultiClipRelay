@@ -87,6 +87,12 @@ pub fn build_ui(app: &gtk4::Application) {
     padding: 4px 10px;
 }
 
+/* Force consistent row height across all columns. */
+columnview row,
+columnview listview row {
+    min-height: 28px;
+}
+
 /* Zebra stripes: color the whole row (not individual cells) to avoid a chopped look. */
 columnview row:nth-child(odd),
 columnview listview row:nth-child(odd) {
