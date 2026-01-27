@@ -1,4 +1,5 @@
 mod wl_clipboard_logs;
+mod table;
 use glib::clone;
 use gtk4::prelude::*;
 
@@ -34,7 +35,8 @@ use self::services::{
     connect_service_handlers, make_update_services_ui, ServiceConfigInputs, ServiceWidgets,
 };
 use self::timers::{install_close_handler, install_log_drain, install_prune_timer};
-use self::wl_clipboard_logs::open_wl_clipboard_logs_window;
+use self::table::{make_tabbed_table, ColumnSpec};
+use self::wl_clipboard_logs::build_wl_clipboard_logs_widget;
 
 pub fn build_ui(app: &gtk4::Application) {
     if let Some(win) = app
@@ -340,54 +342,63 @@ pub fn build_ui(app: &gtk4::Application) {
     control_scroll.set_margin_start(12);
     control_scroll.set_margin_end(12);
 
-    // --- Log view ---
-    let log_buf = gtk4::TextBuffer::new(None);
-    let log_view = gtk4::TextView::builder()
-        .buffer(&log_buf)
-        .editable(false)
-        .monospace(true)
-        .build();
-    let log_scroll = gtk4::ScrolledWindow::builder()
-        .vexpand(true)
-        .hexpand(true)
-        .child(&log_view)
-        .build();
+    // --- Logs view (tabs) ---
+    let app_logs = make_tabbed_table(&[
+        ColumnSpec { title: "time", fixed_width: Some(140), expand: false, resizable: true, ellipsize: true },
+        ColumnSpec { title: "src", fixed_width: Some(170), expand: false, resizable: true, ellipsize: true },
+        ColumnSpec { title: "message", fixed_width: None, expand: true, resizable: true, ellipsize: false },
+    ]);
+
+    let logs_notebook = gtk4::Notebook::new();
+    logs_notebook.set_vexpand(true);
+    logs_notebook.set_hexpand(true);
 
     let clear_logs = gtk4::Button::with_label(t(initial_lang, K::BtnClearLogs));
+    clear_logs.connect_clicked(clone!(@strong app_logs => move |_| {
+        app_logs.store.remove_all();
+    }));
+
     let wl_logs_btn = gtk4::Button::with_label(t(initial_lang, K::BtnWlClipboardLogs));
     wl_logs_btn.set_sensitive(use_systemd);
-    wl_logs_btn.connect_clicked(clone!(@strong app, @weak window, @strong lang_state => move |_| {
-        let lang = *lang_state.lock().unwrap();
-        open_wl_clipboard_logs_window(&app, &window, lang);
-    }));
-    clear_logs.connect_clicked(clone!(@weak log_buf => move |_| {
-        log_buf.set_text("");
+    wl_logs_btn.connect_clicked(clone!(@weak logs_notebook => move |_| {
+        logs_notebook.set_current_page(Some(1));
     }));
 
     let logs_actions = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     logs_actions.append(&clear_logs);
     logs_actions.append(&wl_logs_btn);
 
+    let app_logs_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    app_logs_box.append(&logs_actions);
+    app_logs_box.append(&app_logs.scroll);
+    logs_notebook.append_page(&app_logs_box, Some(&gtk4::Label::new(Some("App logs"))));
+
+    let (clip_logs_widget, clip_logs_alive) = build_wl_clipboard_logs_widget(initial_lang);
+    window.connect_close_request(clone!(@strong clip_logs_alive => @default-return glib::Propagation::Proceed, move |_| {
+        clip_logs_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+        glib::Propagation::Proceed
+    }));
+
+    let clip_logs_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    clip_logs_box.append(&clip_logs_widget);
+    logs_notebook.append_page(&clip_logs_box, Some(&gtk4::Label::new(Some("Clipboard"))));
+
     let logs_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
     logs_box.set_margin_top(12);
     logs_box.set_margin_bottom(12);
     logs_box.set_margin_start(12);
     logs_box.set_margin_end(12);
-    logs_box.append(&logs_actions);
-    logs_box.append(&log_scroll);
+    logs_box.append(&logs_notebook);
 
     // --- History view ---
-    let history_buf = gtk4::TextBuffer::new(None);
-    let history_view = gtk4::TextView::builder()
-        .buffer(&history_buf)
-        .editable(false)
-        .monospace(true)
-        .build();
-    let history_scroll = gtk4::ScrolledWindow::builder()
-        .vexpand(true)
-        .hexpand(true)
-        .child(&history_view)
-        .build();
+    let history_table = make_tabbed_table(&[
+        ColumnSpec { title: "time", fixed_width: Some(190), expand: false, resizable: true, ellipsize: true },
+        ColumnSpec { title: "dir", fixed_width: Some(70), expand: false, resizable: true, ellipsize: true },
+        ColumnSpec { title: "peer", fixed_width: Some(140), expand: false, resizable: true, ellipsize: true },
+        ColumnSpec { title: "kind", fixed_width: Some(90), expand: false, resizable: true, ellipsize: true },
+        ColumnSpec { title: "bytes", fixed_width: Some(80), expand: false, resizable: true, ellipsize: true },
+        ColumnSpec { title: "extra", fixed_width: None, expand: true, resizable: true, ellipsize: false },
+    ]);
 
     let clear_history = gtk4::Button::with_label(t(initial_lang, K::BtnClearHistory));
     let history_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
@@ -396,7 +407,7 @@ pub fn build_ui(app: &gtk4::Application) {
     history_box.set_margin_start(12);
     history_box.set_margin_end(12);
     history_box.append(&clear_history);
-    history_box.append(&history_scroll);
+    history_box.append(&history_table.scroll);
 
     // --- Help view ---
     let help_buf = gtk4::TextBuffer::new(None);
@@ -417,8 +428,8 @@ pub fn build_ui(app: &gtk4::Application) {
     help_scroll.set_margin_start(12);
     help_scroll.set_margin_end(12);
 
-    // log receiver -> append to text buffer
-    install_log_drain(log_rx, log_buf.clone());
+    // log receiver -> append to app logs table
+    install_log_drain(log_rx, app_logs.store.clone(), app_logs.scroll.clone());
 
     // Config save/reload wiring is handled in a dedicated module.
 
@@ -492,7 +503,8 @@ pub fn build_ui(app: &gtk4::Application) {
 
     // --- History refresh ---
     install_history_refresh(
-        history_buf.clone(),
+        history_table.store.clone(),
+        history_table.scroll.clone(),
         clear_history.clone(),
         log_tx.clone(),
         lang_state.clone(),

@@ -1,6 +1,4 @@
 use gtk4::prelude::*;
-use gtk4::{gio, glib};
-use gtk4::pango::EllipsizeMode;
 
 use std::cell::RefCell;
 use std::process::Command;
@@ -13,6 +11,8 @@ use std::time::Duration;
 
 use crate::i18n::{t, Lang, K};
 use crate::systemd;
+
+use crate::ui::table::{keep_scroll_tail, make_tabbed_table, ColumnSpec};
 
 fn format_journal_as_columns(text: &str) -> String {
     // Input (short-iso):
@@ -85,12 +85,13 @@ fn read_wl_clipboard_journal() -> String {
     }
 }
 
+#[allow(dead_code)]
 pub fn open_wl_clipboard_logs_window(
     app: &gtk4::Application,
     parent: &gtk4::ApplicationWindow,
     lang: Lang,
 ) {
-    // Clipboard logs (systemd journal).
+    // Clipboard logs (systemd journal) - standalone window.
     let window = gtk4::Window::builder()
         .application(app)
         .title(t(lang, K::WindowWlClipboardLogs))
@@ -98,10 +99,21 @@ pub fn open_wl_clipboard_logs_window(
         .default_height(560)
         .transient_for(parent)
         .build();
+    let (root, alive) = build_wl_clipboard_logs_widget(lang);
+    window.set_child(Some(&root));
 
+    window.connect_close_request(glib::clone!(@strong alive => @default-return glib::Propagation::Proceed, move |_| {
+        alive.store(false, Ordering::Relaxed);
+        glib::Propagation::Proceed
+    }));
+
+    window.show();
+}
+
+pub fn build_wl_clipboard_logs_widget(lang: Lang) -> (gtk4::Widget, Arc<AtomicBool>) {
     if !systemd::enabled_from_env_or_auto() {
         let label = gtk4::Label::builder()
-            .label("systemd user service is not available; logs are shown in the main Logs tab when not using systemd.")
+            .label("systemd user service is not available; clipboard journal logs are unavailable.")
             .wrap(true)
             .xalign(0.0)
             .margin_top(12)
@@ -109,162 +121,80 @@ pub fn open_wl_clipboard_logs_window(
             .margin_start(12)
             .margin_end(12)
             .build();
-        window.set_child(Some(&label));
-        window.show();
-        return;
+        return (label.upcast::<gtk4::Widget>(), Arc::new(AtomicBool::new(false)));
     }
 
-    // Model: each row is a raw line in a single StringObject.
-    // The line itself is tab-separated: time<TAB>unit<TAB>message.
-    let store = gio::ListStore::new::<gtk4::StringObject>();
-    let selection = gtk4::SingleSelection::new(Some(store.clone()));
-    selection.set_autoselect(false);
-    selection.set_can_unselect(true);
+    let table = make_tabbed_table(&[
+        ColumnSpec {
+            title: "time",
+            fixed_width: Some(240),
+            expand: false,
+            resizable: true,
+            ellipsize: true,
+        },
+        ColumnSpec {
+            title: "unit",
+            fixed_width: Some(300),
+            expand: false,
+            resizable: true,
+            ellipsize: true,
+        },
+        ColumnSpec {
+            title: "message",
+            fixed_width: None,
+            expand: true,
+            resizable: true,
+            ellipsize: false,
+        },
+    ]);
 
-    let table = gtk4::ColumnView::new(Some(selection.clone()));
-    table.set_vexpand(true);
-    table.set_hexpand(true);
+    let root: gtk4::Widget = table.scroll.clone().upcast();
+    let alive = Arc::new(AtomicBool::new(true));
 
-    fn parse_cols(line: &str) -> (String, String, String) {
-        let mut it = line.splitn(3, '\t');
-        let a = it.next().unwrap_or("").to_string();
-        let b = it.next().unwrap_or("").to_string();
-        let c = it.next().unwrap_or("").to_string();
-        (a, b, c)
-    }
-
-    let make_factory = |col: usize, ellipsize: bool| {
-        let factory = gtk4::SignalListItemFactory::new();
-        factory.connect_setup(move |_, list_item| {
-            let label = gtk4::Label::builder()
-                .xalign(0.0)
-                .selectable(true)
-                .single_line_mode(true)
-                .ellipsize(if ellipsize { EllipsizeMode::End } else { EllipsizeMode::None })
-                .build();
-            list_item.set_child(Some(&label));
-        });
-        factory.connect_bind(move |_, list_item| {
-            let Some(item) = list_item.item() else { return; };
-            let Ok(obj) = item.downcast::<gtk4::StringObject>() else { return; };
-            let (t, u, m) = parse_cols(obj.string().as_str());
-            let text = match col {
-                0 => t,
-                1 => u,
-                _ => m,
-            };
-            let Some(child) = list_item.child() else { return; };
-            let Ok(label) = child.downcast::<gtk4::Label>() else { return; };
-            label.set_text(&text);
-        });
-        factory
-    };
-
-    let factory_time = make_factory(0, true);
-    let factory_unit = make_factory(1, true);
-    let factory_msg = make_factory(2, false);
-
-    let col_time = gtk4::ColumnViewColumn::new(Some("time"), Some(factory_time.clone()));
-    col_time.set_fixed_width(240);
-    col_time.set_resizable(true);
-
-    let col_unit = gtk4::ColumnViewColumn::new(Some("unit"), Some(factory_unit.clone()));
-    col_unit.set_fixed_width(280);
-    col_unit.set_resizable(true);
-
-    let col_msg = gtk4::ColumnViewColumn::new(Some("message"), Some(factory_msg.clone()));
-    col_msg.set_expand(true);
-    col_msg.set_resizable(true);
-
-    table.append_column(&col_time);
-    table.append_column(&col_unit);
-    table.append_column(&col_msg);
-
-    let scroll = gtk4::ScrolledWindow::builder()
-        .vexpand(true)
-        .hexpand(true)
-        .hscrollbar_policy(gtk4::PolicyType::Automatic)
-        .vscrollbar_policy(gtk4::PolicyType::Automatic)
-        .child(&table)
-        .build();
-
-    window.set_child(Some(&scroll));
-
+    // Background reader -> UI model updater.
     let (tx, rx) = std::sync::mpsc::channel::<String>();
-
     let last_rendered: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
-    // Poll the receiver on the main thread.
     glib::timeout_add_local(
         Duration::from_millis(200),
-        glib::clone!(@weak scroll, @strong store, @strong last_rendered => @default-return glib::ControlFlow::Break, move || {
-            // Keep only the latest snapshot to avoid UI churn.
+        glib::clone!(@weak root, @strong table, @strong last_rendered => @default-return glib::ControlFlow::Break, move || {
             let mut latest: Option<String> = None;
             while let Ok(s) = rx.try_recv() {
                 latest = Some(s);
             }
             if let Some(s) = latest {
-                // Do not reset the view if nothing changed; this prevents periodic scroll jumps.
                 if last_rendered.borrow().as_deref() == Some(&s) {
                     return glib::ControlFlow::Continue;
                 }
 
-                // Capture current scroll state.
+                let scroll = match root.clone().downcast::<gtk4::ScrolledWindow>() {
+                    Ok(v) => v,
+                    Err(_) => return glib::ControlFlow::Continue,
+                };
+
                 let vadj = scroll.vadjustment();
                 let old_value = vadj.value();
                 let old_upper = vadj.upper();
                 let old_page = vadj.page_size();
                 let at_bottom = old_value + old_page >= (old_upper - 2.0).max(0.0);
 
-                // Update model.
-                store.remove_all();
+                table.store.remove_all();
                 for line in s.lines() {
                     if line.trim().is_empty() {
                         continue;
                     }
-                    store.append(&gtk4::StringObject::new(line));
+                    table.store.append(&gtk4::StringObject::new(line));
                 }
+                keep_scroll_tail(&scroll, at_bottom, old_value, old_upper);
                 *last_rendered.borrow_mut() = Some(s);
-
-                // After buffer update, adjustments are updated asynchronously; fix scroll on idle.
-                glib::idle_add_local_once(glib::clone!(@weak scroll => move || {
-                    let vadj = scroll.vadjustment();
-                    if at_bottom {
-                        // Follow tail.
-                        let upper = vadj.upper();
-                        let page = vadj.page_size();
-                        let max_value = (upper - page).max(0.0);
-                        vadj.set_value(max_value);
-                    } else {
-                        // Restore prior scroll offset as best as possible.
-                        let upper = vadj.upper();
-                        let page = vadj.page_size();
-                        let max_value = (upper - page).max(0.0);
-                        let v = old_value.min(max_value);
-                        // If the content shrank a lot, keep relative position instead of snapping.
-                        if old_upper > 1.0 && upper > 1.0 {
-                            let frac = (old_value / old_upper).clamp(0.0, 1.0);
-                            let target = (frac * upper).min(max_value);
-                            vadj.set_value(target);
-                        } else {
-                            vadj.set_value(v);
-                        }
-                    }
-                }));
             }
             glib::ControlFlow::Continue
         }),
     );
 
-    let alive = Arc::new(AtomicBool::new(true));
-    window.connect_close_request(glib::clone!(@strong alive => @default-return glib::Propagation::Proceed, move |_| {
-        alive.store(false, Ordering::Relaxed);
-        glib::Propagation::Proceed
-    }));
-
+    let alive_thread = alive.clone();
     std::thread::spawn(move || {
-        // Emit once immediately, then refresh.
-        while alive.load(Ordering::Relaxed) {
+        while alive_thread.load(Ordering::Relaxed) {
             let s = read_wl_clipboard_journal();
             if tx.send(s).is_err() {
                 break;
@@ -273,5 +203,6 @@ pub fn open_wl_clipboard_logs_window(
         }
     });
 
-    window.show();
+    let _ = lang;
+    (root, alive)
 }

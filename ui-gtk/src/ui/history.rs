@@ -1,5 +1,6 @@
 use glib::clone;
 use gtk4::prelude::*;
+use gtk4::gio;
 use serde::Deserialize;
 
 use std::cell::RefCell;
@@ -11,6 +12,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use crate::i18n::{t, Lang, K};
+
+use super::table::keep_scroll_tail;
 
 #[derive(Debug, Clone, Deserialize)]
 struct HistoryEvent {
@@ -88,7 +91,7 @@ fn fmt_ts(ts_ms: Option<u64>) -> String {
     }
 }
 
-fn format_event(e: HistoryEvent) -> String {
+fn format_event_as_row(e: HistoryEvent) -> String {
     let ts = fmt_ts(e.ts_ms);
     let dir = e.dir.unwrap_or_else(|| "?".into());
     let kind = e.kind.unwrap_or_else(|| "?".into());
@@ -126,24 +129,34 @@ fn format_event(e: HistoryEvent) -> String {
     let extra = if extra.is_empty() {
         String::new()
     } else {
-        format!("  {}", extra.join(" "))
+        extra.join(" ")
     };
 
-    format!("[{ts}] {dir} peer={peer} kind={kind} bytes={bytes} room={room}{extra}")
+    // Columns: time | dir | peer | kind | bytes | extra
+    // Keep extra compact to avoid overly-wide fixed columns.
+    let extra = if room.is_empty() {
+        extra
+    } else if extra.is_empty() {
+        format!("room={room}")
+    } else {
+        format!("room={room} {extra}")
+    };
+    format!("{ts}\t{dir}\t{peer}\t{kind}\t{bytes}\t{extra}")
 }
 
 pub fn install_history_refresh(
-    history_buf: gtk4::TextBuffer,
+    store: gio::ListStore,
+    scroll: gtk4::ScrolledWindow,
     clear_btn: gtk4::Button,
     log_tx: mpsc::Sender<String>,
     lang_state: Arc<Mutex<Lang>>,
 ) {
     // Button: clear history file.
-    clear_btn.connect_clicked(clone!(@strong history_buf, @strong log_tx => move |_| {
+    clear_btn.connect_clicked(clone!(@strong store, @strong log_tx => move |_| {
         let p = history_path();
         match std::fs::write(&p, "") {
             Ok(()) => {
-                history_buf.set_text("");
+                store.remove_all();
                 let _ = log_tx.send(format!("cleared history: {}", p.display()));
             }
             Err(e) => {
@@ -156,14 +169,14 @@ pub fn install_history_refresh(
     let last_render: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     glib::timeout_add_local(
         Duration::from_millis(800),
-        clone!(@weak history_buf, @strong log_tx, @strong lang_state, @strong last_render => @default-return glib::ControlFlow::Break, move || {
+        clone!(@weak scroll, @strong store, @strong log_tx, @strong lang_state, @strong last_render => @default-return glib::ControlFlow::Break, move || {
             let p = history_path();
             let lines = read_tail_lines(&p, 1024 * 1024, 250);
 
             let mut out_lines: Vec<String> = Vec::new();
             for l in lines {
                 match serde_json::from_str::<HistoryEvent>(&l) {
-                    Ok(ev) => out_lines.push(format_event(ev)),
+                    Ok(ev) => out_lines.push(format_event_as_row(ev)),
                     Err(_) => out_lines.push(l),
                 }
             }
@@ -171,13 +184,29 @@ pub fn install_history_refresh(
             if out_lines.is_empty() {
                 // Keep it friendly: show a hint when no history exists yet.
                 let lang = *lang_state.lock().unwrap();
-                let hint = t(lang, K::HistoryEmptyHint);
-                out_lines.push(hint.to_string());
+                let hint = t(lang, K::HistoryEmptyHint).to_string();
+                // Put hint into the last column so it doesn't break the table.
+                out_lines.push(format!("\t\t\t\t\t{hint}"));
             }
 
             let rendered = out_lines.join("\n");
             if rendered != *last_render.borrow() {
-                history_buf.set_text(&rendered);
+                // Capture scroll state.
+                let vadj = scroll.vadjustment();
+                let old_value = vadj.value();
+                let old_upper = vadj.upper();
+                let old_page = vadj.page_size();
+                let at_bottom = old_value + old_page >= (old_upper - 2.0).max(0.0);
+
+                store.remove_all();
+                for line in out_lines {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    store.append(&gtk4::StringObject::new(&line));
+                }
+
+                keep_scroll_tail(&scroll, at_bottom, old_value, old_upper);
                 *last_render.borrow_mut() = rendered;
             }
 

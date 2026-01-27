@@ -1,19 +1,77 @@
 use glib::clone;
 use gtk4::prelude::*;
+use gtk4::gio;
 
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use crate::procs::{terminate_child, Procs};
 
-pub fn install_log_drain(log_rx: mpsc::Receiver<String>, log_buf: gtk4::TextBuffer) {
+use super::table::keep_scroll_tail;
+
+fn now_hms_millis() -> String {
+    if let Ok(dt) = glib::DateTime::now_local() {
+        dt.format("%T")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|_| "?".into())
+    } else {
+        "?".to_string()
+    }
+}
+
+fn split_prefix(line: &str) -> (String, String) {
+    // Expected examples:
+    //   "[node:stdout] hello"
+    //   "started relay"
+    if let Some(rest) = line.strip_prefix('[') {
+        if let Some((p, m)) = rest.split_once("] ") {
+            return (p.to_string(), m.to_string());
+        }
+        if let Some((p, m)) = rest.split_once("]") {
+            return (p.to_string(), m.trim_start().to_string());
+        }
+    }
+    ("ui".to_string(), line.to_string())
+}
+
+pub fn install_log_drain(
+    log_rx: mpsc::Receiver<String>,
+    store: gio::ListStore,
+    scroll: gtk4::ScrolledWindow,
+) {
     // glib 0.19 / gtk4: use a main-thread timeout to drain logs from std::sync::mpsc.
     glib::timeout_add_local(
         Duration::from_millis(50),
-        clone!(@weak log_buf => @default-return glib::ControlFlow::Break, move || {
+        clone!(@strong store, @weak scroll => @default-return glib::ControlFlow::Break, move || {
+            // Capture scroll state once per tick.
+            let vadj = scroll.vadjustment();
+            let old_value = vadj.value();
+            let old_upper = vadj.upper();
+            let old_page = vadj.page_size();
+            let at_bottom = old_value + old_page >= (old_upper - 2.0).max(0.0);
+
+            let mut appended = 0usize;
             while let Ok(line) = log_rx.try_recv() {
-                let mut end = log_buf.end_iter();
-                log_buf.insert(&mut end, &format!("{}\n", line));
+                let ts = now_hms_millis();
+                let (src, msg) = split_prefix(&line);
+                let row = format!("{}\t{}\t{}", ts, src, msg);
+                store.append(&gtk4::StringObject::new(&row));
+                appended += 1;
+            }
+
+            // Prevent unbounded growth.
+            let max_rows: u32 = 5000;
+            let n = store.n_items();
+            if n > max_rows {
+                // Drop oldest rows.
+                let drop = n - max_rows;
+                for _ in 0..drop {
+                    store.remove(0);
+                }
+            }
+
+            if appended > 0 {
+                keep_scroll_tail(&scroll, at_bottom, old_value, old_upper);
             }
             glib::ControlFlow::Continue
         }),
