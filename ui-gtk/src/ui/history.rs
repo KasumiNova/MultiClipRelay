@@ -460,7 +460,7 @@ pub fn make_history_table(lang: Lang, columns_cfg: &BTreeMap<String, bool>) -> H
         label.set_hexpand(true);
         label.set_halign(gtk4::Align::Fill);
         label.set_valign(gtk4::Align::Center);
-        label.set_vexpand(false);
+        label.set_vexpand(true);
         root.append(&label);
         list_item.set_child(Some(&root));
     });
@@ -474,18 +474,21 @@ pub fn make_history_table(lang: Lang, columns_cfg: &BTreeMap<String, bool>) -> H
         let Some(first) = root.first_child() else { return; };
         let Ok(label) = first.downcast::<gtk4::Label>() else { return; };
 
-        // Keep both main and detail rows single-line for consistent (compressed) height.
-        // Full extra text is available via tooltip.
         if row.is_detail {
+            // Detail row: fill available width with wrapped text (multi-line allowed).
             label.set_text(&row.extra);
             label.set_tooltip_text(Some(&row.extra));
-            label.set_single_line_mode(true);
-            label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            label.set_single_line_mode(false);
+            label.set_ellipsize(gtk4::pango::EllipsizeMode::None);
+            label.set_wrap(true);
+            label.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
         } else {
+            // Main row: single-line timestamp.
             label.set_text(&row.ts);
             label.set_tooltip_text(None);
             label.set_single_line_mode(true);
             label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            label.set_wrap(false);
         }
     });
     let time_col = gtk4::ColumnViewColumn::new(Some("time"), Some(time_factory));
