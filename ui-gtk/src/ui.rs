@@ -399,8 +399,8 @@ columnview listview row:hover:not(:selected) {
 
     let columns_pop = gtk4::Popover::new();
     let columns_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-    columns_box.set_margin_top(8);
-    columns_box.set_margin_bottom(8);
+    columns_box.set_margin_top(0);
+    columns_box.set_margin_bottom(0);
     columns_box.set_margin_start(10);
     columns_box.set_margin_end(10);
 

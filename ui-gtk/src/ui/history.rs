@@ -412,6 +412,8 @@ pub fn make_history_table(lang: Lang, columns_cfg: &BTreeMap<String, bool>) -> H
             label.add_css_class("monospace");
             label.set_hexpand(true);
             label.set_halign(gtk4::Align::Fill);
+            label.set_valign(gtk4::Align::Center);
+            label.set_vexpand(false);
             root.append(&label);
             list_item.set_child(Some(&root));
         });
@@ -457,6 +459,8 @@ pub fn make_history_table(lang: Lang, columns_cfg: &BTreeMap<String, bool>) -> H
         label.add_css_class("monospace");
         label.set_hexpand(true);
         label.set_halign(gtk4::Align::Fill);
+        label.set_valign(gtk4::Align::Center);
+        label.set_vexpand(false);
         root.append(&label);
         list_item.set_child(Some(&root));
     });
@@ -532,6 +536,8 @@ pub fn make_history_table(lang: Lang, columns_cfg: &BTreeMap<String, bool>) -> H
             Lang::En => "Open",
         });
         btn.add_css_class("flat");
+        btn.set_valign(gtk4::Align::Center);
+        btn.set_vexpand(false);
         btn.connect_clicked(|b| {
             let Some(p) = b.tooltip_text().map(|s| s.to_string()) else {
                 return;
