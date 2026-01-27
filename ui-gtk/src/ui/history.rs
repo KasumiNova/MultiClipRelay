@@ -460,8 +460,52 @@ pub fn make_history_table(lang: Lang, columns_cfg: &BTreeMap<String, bool>) -> H
         label.set_hexpand(true);
         label.set_halign(gtk4::Align::Fill);
         label.set_valign(gtk4::Align::Center);
-        label.set_vexpand(true);
+        label.set_vexpand(false);
         root.append(&label);
+
+        // Right-click context menu for copying full text.
+        let menu_model = gio::Menu::new();
+        menu_model.append(Some("复制"), Some("detail.copy"));
+        let popover = gtk4::PopoverMenu::builder()
+            .menu_model(&menu_model)
+            .has_arrow(false)
+            .build();
+        popover.set_parent(&root);
+
+        let text_to_copy = std::cell::RefCell::new(String::new());
+        let action_group = gio::SimpleActionGroup::new();
+        let copy_action = gio::SimpleAction::new("copy", None);
+        copy_action.connect_activate({
+            let text_to_copy = text_to_copy.clone();
+            move |_, _| {
+                let text = text_to_copy.borrow().clone();
+                if !text.is_empty() {
+                    let display = gtk4::gdk::Display::default();
+                    if let Some(d) = display {
+                        let clipboard = d.clipboard();
+                        clipboard.set_text(&text);
+                    }
+                }
+            }
+        });
+        action_group.add_action(&copy_action);
+        root.insert_action_group("detail", Some(&action_group));
+
+        let gesture = gtk4::GestureClick::new();
+        gesture.set_button(gtk4::gdk::BUTTON_SECONDARY);
+        gesture.connect_released({
+            let popover = popover.clone();
+            let label = label.clone();
+            move |gesture, _, x, y| {
+                gesture.set_state(gtk4::EventSequenceState::Claimed);
+                let full_text = label.tooltip_text().map(|t| t.to_string()).unwrap_or_default();
+                *text_to_copy.borrow_mut() = full_text;
+                popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                popover.popup();
+            }
+        });
+        root.add_controller(gesture);
+
         list_item.set_child(Some(&root));
     });
     time_factory.connect_bind(move |_, list_item| {
@@ -474,22 +518,18 @@ pub fn make_history_table(lang: Lang, columns_cfg: &BTreeMap<String, bool>) -> H
         let Some(first) = root.first_child() else { return; };
         let Ok(label) = first.downcast::<gtk4::Label>() else { return; };
 
+        // Keep both rows single-line for consistent (compressed) height.
+        // Full text is available via tooltip and right-click copy.
         if row.is_detail {
-            // Detail row: fill available width with wrapped text (multi-line allowed).
             label.set_text(&row.extra);
             label.set_tooltip_text(Some(&row.extra));
-            label.set_single_line_mode(false);
-            label.set_ellipsize(gtk4::pango::EllipsizeMode::None);
-            label.set_wrap(true);
-            label.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
         } else {
-            // Main row: single-line timestamp.
             label.set_text(&row.ts);
             label.set_tooltip_text(None);
-            label.set_single_line_mode(true);
-            label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-            label.set_wrap(false);
         }
+        label.set_single_line_mode(true);
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        label.set_wrap(false);
     });
     let time_col = gtk4::ColumnViewColumn::new(Some("time"), Some(time_factory));
     time_col.set_fixed_width(220);
