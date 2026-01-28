@@ -11,6 +11,7 @@ use node::clipboard::wl_paste;
 use node::consts::{
     APPLIED_MARKER_MIME, GNOME_COPIED_FILES_MIME, KDE_URI_LIST_MIME, URI_LIST_MIME,
 };
+use node::dedup::{last_sent_get, last_sent_set};
 use node::hash::sha256_hex;
 use node::history::record_send;
 use node::image_mode::{parse_image_mode, ImageMode};
@@ -311,6 +312,16 @@ pub(super) async fn wl_watch_hook() -> anyhow::Result<()> {
         };
 
         let sha = sha256_hex(&send_bytes);
+
+        // Cross-process dedup: `wl-paste --watch` can fire multiple times for the same
+        // selection change (esp. multi-mime producers). Keep a small persistent
+        // "last sent sha" per room + mime to avoid re-sending identical payloads.
+        if let Some(last) = last_sent_get(&ctx.state_dir, &room, send_mime).await {
+            if last == sha {
+                debug(&format!("hook: lastsent hit mime={} sha={}", send_mime, sha));
+                return Ok(());
+            }
+        }
         if is_suppressed(&ctx.state_dir, &room, send_mime, &sha).await {
             debug(&format!("hook: suppressed mime={} sha={}", send_mime, sha));
             return Ok(());
@@ -340,11 +351,13 @@ pub(super) async fn wl_watch_hook() -> anyhow::Result<()> {
         if !ctx.device_name.trim().is_empty() {
             msg.sender_name = Some(ctx.device_name.clone());
         }
-        msg.sha256 = Some(sha);
+        msg.sha256 = Some(sha.clone());
         if let Err(e) = send_frame(stream, msg.to_bytes()).await {
             debug(&format!("hook: send_frame failed: {:#}", e));
             return Ok(());
         }
+
+        last_sent_set(&ctx.state_dir, &room, send_mime, &sha).await;
         log::debug!(
             "wl-watch: sent kind={:?} mime={} bytes={} sha={:?}",
             msg.kind,

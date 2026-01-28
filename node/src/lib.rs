@@ -5,6 +5,7 @@
 
 pub mod clipboard;
 pub mod consts;
+pub mod dedup;
 pub mod hash;
 pub mod history;
 pub mod image_mode;

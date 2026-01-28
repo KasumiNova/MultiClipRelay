@@ -6,6 +6,7 @@ use url::Url;
 use walkdir::WalkDir;
 
 use crate::consts::TAR_MIME;
+use crate::dedup::{last_sent_get, last_sent_set};
 use crate::hash::sha256_hex;
 use crate::history::record_send;
 use crate::net::{connect, send_frame};
@@ -532,6 +533,14 @@ pub async fn send_paths_as_file(
         return Ok(None);
     }
 
+    // Cross-process dedup: `wl-watch-hook` can be triggered multiple times for the
+    // same clipboard payload; avoid re-sending the exact same file bundle.
+    if let Some(last) = last_sent_get(state_dir, room, "file").await {
+        if last == sha {
+            return Ok(Some(sha));
+        }
+    }
+
     let name = bundle_name_for(&paths);
 
     let stream = connect(relay).await?;
@@ -544,6 +553,8 @@ pub async fn send_paths_as_file(
     msg.sender_name = local_name_opt.clone();
     msg.sha256 = Some(sha.clone());
     send_frame(stream, msg.to_bytes()).await?;
+
+    last_sent_set(state_dir, room, "file", &sha).await;
 
     record_send(
         local_device_id,
