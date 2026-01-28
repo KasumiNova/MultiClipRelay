@@ -12,7 +12,7 @@ use node::consts::{
     GNOME_COPIED_FILES_MIME, KDE_URI_LIST_MIME, URI_LIST_MIME,
 };
 use node::hash::sha256_hex;
-use node::history::record_send;
+use node::history::{record_recv, record_send};
 use node::image_mode::parse_image_mode;
 use node::net::{connect, send_frame, send_join};
 use node::paths::{default_state_dir, safe_for_filename};
@@ -523,73 +523,112 @@ async fn get_or_create_device_id(state_dir: &PathBuf) -> anyhow::Result<String> 
     Ok(id)
 }
 
-async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf) -> anyhow::Result<()> {
+async fn listen_mode(ctx: &Ctx, room: &str, relay: &str) -> anyhow::Result<()> {
+    // Heartbeat + reconnect (mirror wl-apply behavior to avoid idle disconnects).
+    let reconnect_backoff = Duration::from_millis(800);
+    let heartbeat_interval = Duration::from_secs(20);
+
     loop {
-        let len = match reader.read_u32().await {
-            Ok(l) => l as usize,
-            Err(_) => break,
+        let stream = match connect(relay).await {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("listen: connect failed: {e:?}");
+                tokio::time::sleep(reconnect_backoff).await;
+                continue;
+            }
         };
-        let mut buf = vec![0u8; len];
-        reader.read_exact(&mut buf).await.context("read payload")?;
-        let msg = Message::from_bytes(&buf);
-        match msg.kind {
-            Kind::Text => {
-                let text = msg
-                    .payload
-                    .as_ref()
-                    .map(|p| String::from_utf8_lossy(p).to_string())
-                    .unwrap_or_default();
-                println!(
-                    "RECV from {} kind={:?} text={}",
-                    msg.device_id, msg.kind, text
-                );
+        let (mut reader, mut writer) = stream.into_split();
+
+        // Send a Join message so the relay can register us into the room.
+        if let Err(e) = send_join(&mut writer, &ctx.device_id, &ctx.device_name, room).await {
+            log::warn!("listen: send join failed: {e:?}");
+            tokio::time::sleep(reconnect_backoff).await;
+            continue;
+        }
+
+        println!("Listening in room '{}' on {}", room, relay);
+
+        let mut hb = tokio::time::interval(heartbeat_interval);
+        hb.tick().await;
+
+        loop {
+            let len: usize = tokio::select! {
+                _ = hb.tick() => {
+                    if let Err(e) = send_join(&mut writer, &ctx.device_id, &ctx.device_name, room).await {
+                        log::warn!("listen: heartbeat failed (will reconnect): {e:?}");
+                        break;
+                    }
+                    continue;
+                }
+                res = reader.read_u32() => {
+                    match res {
+                        Ok(l) => l as usize,
+                        Err(e) => {
+                            log::warn!("listen: read failed (will reconnect): {e:?}");
+                            break;
+                        }
+                    }
+                }
+            };
+
+            let mut buf = vec![0u8; len];
+            if let Err(e) = reader.read_exact(&mut buf).await {
+                log::warn!("listen: read payload failed (will reconnect): {e:?}");
+                break;
             }
-            Kind::Image => {
-                println!(
-                    "RECV from {} kind={:?} mime={} bytes={} sha256={}",
-                    msg.device_id,
-                    msg.kind,
-                    msg.mime.clone().unwrap_or_default(),
-                    msg.size,
-                    msg.sha256.clone().unwrap_or_default()
-                );
+
+            let msg = Message::from_bytes(&buf);
+
+            // skip our own events (in case we have multiple connections with same device id)
+            if msg.device_id == ctx.device_id {
+                continue;
             }
-            Kind::File => {
-                println!(
-                    "RECV from {} kind={:?} name={} mime={} bytes={} sha256={}",
-                    msg.device_id,
-                    msg.kind,
-                    msg.name.clone().unwrap_or_else(|| "(no-name)".into()),
-                    msg.mime.clone().unwrap_or_default(),
-                    msg.size,
-                    msg.sha256.clone().unwrap_or_default()
-                );
+
+            if !matches!(msg.kind, Kind::Join) {
+                record_recv(&ctx.device_id, Some(ctx.device_name.clone()), room, relay, &msg)
+                    .await;
             }
-            Kind::Join => {
-                println!("RECV from {} kind=Join", msg.device_id);
+
+            match msg.kind {
+                Kind::Text => {
+                    let text = msg
+                        .payload
+                        .as_ref()
+                        .map(|p| String::from_utf8_lossy(p).to_string())
+                        .unwrap_or_default();
+                    println!(
+                        "RECV from {} kind={:?} text={}",
+                        msg.device_id, msg.kind, text
+                    );
+                }
+                Kind::Image => {
+                    println!(
+                        "RECV from {} kind={:?} mime={} bytes={} sha256={}",
+                        msg.device_id,
+                        msg.kind,
+                        msg.mime.clone().unwrap_or_default(),
+                        msg.size,
+                        msg.sha256.clone().unwrap_or_default()
+                    );
+                }
+                Kind::File => {
+                    println!(
+                        "RECV from {} kind={:?} name={} mime={} bytes={} sha256={}",
+                        msg.device_id,
+                        msg.kind,
+                        msg.name.clone().unwrap_or_else(|| "(no-name)".into()),
+                        msg.mime.clone().unwrap_or_default(),
+                        msg.size,
+                        msg.sha256.clone().unwrap_or_default()
+                    );
+                }
+                Kind::Join => {
+                    println!("RECV from {} kind=Join", msg.device_id);
+                }
             }
         }
-    }
-    Ok(())
-}
 
-async fn listen_mode(ctx: &Ctx, room: &str, relay: &str) -> anyhow::Result<()> {
-    let stream = connect(relay).await?;
-    let (reader, mut writer) = stream.into_split();
-
-    // Send a Join message so the relay can register us into the room.
-    send_join(&mut writer, &ctx.device_id, &ctx.device_name, room).await?;
-
-    // spawn reader
-    tokio::spawn(async move {
-        let _ = read_loop(reader).await;
-    });
-    println!("Listening in room '{}' on {}", room, relay);
-    // keep alive
-    // keep writer alive as well, otherwise the TCP write half may close and server may disconnect.
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-        let _ = &writer;
+        tokio::time::sleep(reconnect_backoff).await;
     }
 }
 
