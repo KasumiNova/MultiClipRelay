@@ -29,6 +29,21 @@ pub struct Message {
     pub sha256: Option<String>,
 }
 
+/// Older wire-compatible message (v0).
+///
+/// We keep it only for backward-compatible decoding.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct MessageV0 {
+    pub event_id: String,
+    pub device_id: String,
+    pub ts: u64,
+    pub kind: Kind,
+    pub room: String,
+    pub mime: Option<String>,
+    pub name: Option<String>,
+    pub payload: Option<Vec<u8>>,
+}
+
 /// Wire-compatible old message (v1) without `sender_name`.
 ///
 /// We keep it only for backward-compatible decoding.
@@ -121,26 +136,57 @@ impl Message {
         out
     }
 
-    pub fn from_bytes(b: &[u8]) -> Self {
+    /// Try decoding a message from raw bytes.
+    ///
+    /// This function is intentionally tolerant to older on-the-wire formats.
+    /// Callers should handle errors without panicking (e.g. drop the frame / reconnect).
+    pub fn try_from_bytes(b: &[u8]) -> Result<Self, bincode::Error> {
         if b.len() >= MSG_V2_MAGIC.len() && &b[..MSG_V2_MAGIC.len()] == MSG_V2_MAGIC {
-            return bincode::deserialize(&b[MSG_V2_MAGIC.len()..]).expect("deserialize message v2");
+            return bincode::deserialize(&b[MSG_V2_MAGIC.len()..]);
         }
 
-        // Backward compat: v1 had no magic prefix.
-        let v1: MessageV1 = bincode::deserialize(b).expect("deserialize message v1");
-        Message {
-            event_id: v1.event_id,
-            device_id: v1.device_id,
-            sender_name: None,
-            ts: v1.ts,
-            kind: v1.kind,
-            room: v1.room,
-            mime: v1.mime,
-            name: v1.name,
-            payload: v1.payload,
-            size: v1.size,
-            sha256: v1.sha256,
+        // Backward compat: v1 had no magic prefix and no `sender_name`.
+        match bincode::deserialize::<MessageV1>(b) {
+            Ok(v1) => {
+                return Ok(Message {
+                    event_id: v1.event_id,
+                    device_id: v1.device_id,
+                    sender_name: None,
+                    ts: v1.ts,
+                    kind: v1.kind,
+                    room: v1.room,
+                    mime: v1.mime,
+                    name: v1.name,
+                    payload: v1.payload,
+                    size: v1.size,
+                    sha256: v1.sha256,
+                });
+            }
+            Err(e_v1) => {
+                // Older compat: v0 may not have `size`/`sha256` fields.
+                if let Ok(v0) = bincode::deserialize::<MessageV0>(b) {
+                    let size = v0.payload.as_ref().map(|p| p.len()).unwrap_or(0);
+                    return Ok(Message {
+                        event_id: v0.event_id,
+                        device_id: v0.device_id,
+                        sender_name: None,
+                        ts: v0.ts,
+                        kind: v0.kind,
+                        room: v0.room,
+                        mime: v0.mime,
+                        name: v0.name,
+                        payload: v0.payload,
+                        size,
+                        sha256: None,
+                    });
+                }
+                return Err(e_v1);
+            }
         }
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Self {
+        Self::try_from_bytes(b).expect("deserialize message")
     }
 }
 
@@ -162,7 +208,7 @@ mod tests {
         m.sha256 = Some("abc".to_string());
         m.sender_name = Some("alice".to_string());
         let b = m.to_bytes();
-        let m2 = Message::from_bytes(&b);
+        let m2 = Message::try_from_bytes(&b).expect("decode");
         assert!(matches!(m2.kind, Kind::File));
         assert_eq!(m2.name.as_deref(), Some("hello.txt"));
         assert_eq!(m2.sender_name.as_deref(), Some("alice"));
@@ -186,7 +232,7 @@ mod tests {
             sha256: None,
         };
         let b = bincode::serialize(&v1).expect("serialize v1");
-        let m = Message::from_bytes(&b);
+        let m = Message::try_from_bytes(&b).expect("decode");
         assert_eq!(m.device_id, "dev");
         assert_eq!(m.sender_name, None);
         assert!(matches!(m.kind, Kind::Text));

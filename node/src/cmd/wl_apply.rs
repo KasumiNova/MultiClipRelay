@@ -92,7 +92,19 @@ pub(super) async fn run_wl_apply(
                 log::warn!("wl-apply: read payload failed (will reconnect): {e:?}");
                 break;
             }
-            let msg = Message::from_bytes(&buf);
+            let msg = match Message::try_from_bytes(&buf) {
+                Ok(m) => m,
+                Err(e) => {
+                    let prefix_len = buf.len().min(16);
+                    log::warn!(
+                        "wl-apply: decode failed (will reconnect): len={} prefix={:02x?} err={:?}",
+                        len,
+                        &buf[..prefix_len],
+                        e
+                    );
+                    break;
+                }
+            };
             log::debug!(
                 "wl-apply: recv kind={:?} from={} mime={:?} bytes={} sha={:?}",
                 msg.kind,

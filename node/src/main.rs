@@ -578,7 +578,19 @@ async fn listen_mode(ctx: &Ctx, room: &str, relay: &str) -> anyhow::Result<()> {
                 break;
             }
 
-            let msg = Message::from_bytes(&buf);
+            let msg = match Message::try_from_bytes(&buf) {
+                Ok(m) => m,
+                Err(e) => {
+                    let prefix_len = buf.len().min(16);
+                    log::warn!(
+                        "listen: decode failed (will reconnect): len={} prefix={:02x?} err={:?}",
+                        len,
+                        &buf[..prefix_len],
+                        e
+                    );
+                    break;
+                }
+            };
 
             // skip our own events (in case we have multiple connections with same device id)
             if msg.device_id == ctx.device_id {

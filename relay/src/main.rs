@@ -99,7 +99,22 @@ async fn handle_conn(
         };
         let mut buf = vec![0u8; len];
         reader.read_exact(&mut buf).await.context("read payload")?;
-        let msg = Message::from_bytes(&buf);
+        let msg = match Message::try_from_bytes(&buf) {
+            Ok(m) => m,
+            Err(e) => {
+                let prefix_len = buf.len().min(16);
+                log::warn!(
+                    "relay: decode failed peer={} conn_id={} len={} prefix={:02x?} err={:?}",
+                    peer,
+                    conn_id,
+                    len,
+                    &buf[..prefix_len],
+                    e
+                );
+                // Protocol mismatch / corrupt frame: drop the connection to resync.
+                break;
+            }
+        };
 
         // register sender into room when first message arrives
         if registered_room.is_none() {
