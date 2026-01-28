@@ -1,4 +1,5 @@
 use anyhow::Context;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -34,6 +35,10 @@ pub fn is_active(unit: &str) -> bool {
 }
 
 pub fn start(unit: &str) -> anyhow::Result<()> {
+    let _ = repair_unit_execstart_if_missing(unit);
+    let _ = Command::new("systemctl")
+        .args(["--user", "reset-failed", unit])
+        .status();
     Command::new("systemctl")
         .args(["--user", "start", unit])
         .status()
@@ -61,6 +66,110 @@ pub fn node_supports_x11_sync() -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+fn unit_dir() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
+    base.join("systemd").join("user")
+}
+
+fn unit_file_path(unit: &str) -> PathBuf {
+    unit_dir().join(unit)
+}
+
+fn prefer_installed_bin(names: &[&str]) -> Option<PathBuf> {
+    for n in names {
+        let p = Path::new("/usr/bin").join(n);
+        if p.exists() {
+            return Some(p);
+        }
+        let p = Path::new("/usr/local/bin").join(n);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    for n in names {
+        if let Ok(p) = which::which(n) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn maybe_rewrite_execstart_line(
+    line: &str,
+    new_bin: &Path,
+    expected_basenames: &[&str],
+) -> Option<String> {
+    let rest = line.strip_prefix("ExecStart=")?;
+    let trimmed = rest.trim_start();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    let cut = trimmed
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(trimmed.len());
+    let old_bin = &trimmed[..cut];
+    if Path::new(old_bin).exists() {
+        return None;
+    }
+    if let Some(base) = Path::new(old_bin).file_name().and_then(|s| s.to_str()) {
+        if !expected_basenames.iter().any(|b| b == &base) {
+            return None;
+        }
+    } else {
+        return None;
+    }
+
+    let suffix = &trimmed[cut..];
+    Some(format!("ExecStart={}{}", new_bin.display(), suffix))
+}
+
+fn repair_unit_execstart_if_missing(unit: &str) -> anyhow::Result<()> {
+    let path = unit_file_path(unit);
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let (new_bin, expected): (Option<PathBuf>, Vec<&str>) = if unit == UNIT_RELAY {
+        (
+            prefer_installed_bin(&["multicliprelay-relay", "relay"]),
+            vec!["multicliprelay-relay", "relay"],
+        )
+    } else {
+        (
+            prefer_installed_bin(&["multicliprelay-node", "node"]),
+            vec!["multicliprelay-node", "node"],
+        )
+    };
+
+    let Some(new_bin) = new_bin else {
+        return Ok(());
+    };
+
+    let s = std::fs::read_to_string(&path)
+        .with_context(|| format!("read unit file: {}", path.display()))?;
+    let mut changed = false;
+    let mut out: Vec<String> = Vec::new();
+    for line in s.lines() {
+        if let Some(new_line) = maybe_rewrite_execstart_line(line, &new_bin, &expected) {
+            out.push(new_line);
+            changed = true;
+        } else {
+            out.push(line.to_string());
+        }
+    }
+
+    if changed {
+        std::fs::create_dir_all(unit_dir()).ok();
+        std::fs::write(&path, out.join("\n") + "\n")
+            .with_context(|| format!("write unit file: {}", path.display()))?;
+        let _ = Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status();
+    }
+
+    Ok(())
 }
 
 fn env_path() -> PathBuf {
