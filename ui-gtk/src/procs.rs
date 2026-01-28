@@ -1,6 +1,7 @@
 use anyhow::Context;
 
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -64,11 +65,92 @@ pub fn find_sibling_binary(name: &str) -> Option<PathBuf> {
     }
 }
 
+fn is_dev_exe_location() -> bool {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let Some(s) = exe.to_str() else {
+        return false;
+    };
+    // Heuristic: when running from cargo build output, prefer sibling binaries.
+    s.contains("/target/debug/") || s.contains("/target/release/")
+}
+
+fn add_if_exists(out: &mut Vec<PathBuf>, p: PathBuf) {
+    if p.exists() {
+        out.push(p);
+    }
+}
+
+fn resolve_binary(primary: &str, fallbacks: &[&str]) -> PathBuf {
+    let mut names: Vec<&str> = Vec::with_capacity(1 + fallbacks.len());
+    names.push(primary);
+    names.extend_from_slice(fallbacks);
+
+    let prefer_sibling = is_dev_exe_location();
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // 1) dev: sibling binaries next to current_exe (target/debug|release)
+    if prefer_sibling {
+        for n in names.iter() {
+            if let Some(p) = find_sibling_binary(n) {
+                return p;
+            }
+        }
+    }
+
+    // 2) gather all candidates (sibling, PATH, and common system locations)
+    for n in names.iter() {
+        if let Some(p) = find_sibling_binary(n) {
+            candidates.push(p);
+        }
+        if let Ok(p) = which::which(n) {
+            candidates.push(p);
+        }
+
+        // Common absolute locations (helpful when PATH has an older ~/.local/bin first)
+        add_if_exists(&mut candidates, Path::new("/usr/bin").join(n));
+        add_if_exists(&mut candidates, Path::new("/usr/local/bin").join(n));
+    }
+
+    // Deduplicate while keeping order.
+    let mut uniq: Vec<PathBuf> = Vec::new();
+    for p in candidates.into_iter() {
+        if !uniq.iter().any(|u| u == &p) {
+            uniq.push(p);
+        }
+    }
+
+    // Pick the newest by mtime if possible.
+    let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
+    for p in uniq.into_iter() {
+        match std::fs::metadata(&p).and_then(|m| m.modified()) {
+            Ok(t) => match &best {
+                None => best = Some((p, t)),
+                Some((_, bt)) => {
+                    if t > *bt {
+                        best = Some((p, t));
+                    }
+                }
+            },
+            Err(_) => {
+                // If we can't stat mtime, keep it as a last-resort fallback.
+                if best.is_none() {
+                    best = Some((p, std::time::SystemTime::UNIX_EPOCH));
+                }
+            }
+        }
+    }
+
+    best.map(|(p, _)| p)
+        .unwrap_or_else(|| PathBuf::from(primary))
+}
+
 pub fn spawn_relay(log_tx: &mpsc::Sender<String>, bind_addr: &str) -> anyhow::Result<Child> {
-    // Prefer sibling binary; fallback to PATH.
-    let relay_bin = find_sibling_binary("multicliprelay-relay")
-        .or_else(|| find_sibling_binary("relay"))
-        .unwrap_or_else(|| PathBuf::from("multicliprelay-relay"));
+    // Prefer dev sibling (target/*), otherwise pick the newest available binary across sibling/PATH.
+    let relay_bin = resolve_binary("multicliprelay-relay", &["relay"]);
+    let _ = log_tx.send(format!("starting relay: {}", relay_bin.display()));
     let mut cmd = Command::new(relay_bin);
 
     let bind_addr = bind_addr.trim();
@@ -80,10 +162,9 @@ pub fn spawn_relay(log_tx: &mpsc::Sender<String>, bind_addr: &str) -> anyhow::Re
 }
 
 pub fn spawn_node(log_tx: &mpsc::Sender<String>, args: &[&str]) -> anyhow::Result<Child> {
-    // Prefer sibling binary; fallback to PATH.
-    let node_bin = find_sibling_binary("multicliprelay-node")
-        .or_else(|| find_sibling_binary("node"))
-        .unwrap_or_else(|| PathBuf::from("multicliprelay-node"));
+    // Prefer dev sibling (target/*), otherwise pick the newest available binary across sibling/PATH.
+    let node_bin = resolve_binary("multicliprelay-node", &["node"]);
+    let _ = log_tx.send(format!("starting node: {}", node_bin.display()));
     let mut cmd = Command::new(node_bin);
     cmd.args(args);
     spawn_with_logs(&mut cmd, log_tx, "node")
