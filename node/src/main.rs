@@ -546,6 +546,7 @@ async fn listen_mode(ctx: &Ctx, room: &str, relay: &str) -> anyhow::Result<()> {
             continue;
         }
 
+        log::info!("listen: connected room='{}' relay='{}'", room, relay);
         println!("Listening in room '{}' on {}", room, relay);
 
         let mut hb = tokio::time::interval(heartbeat_interval);
@@ -640,6 +641,14 @@ async fn send_text(ctx: &Ctx, room: &str, text: &str, relay: &str) -> anyhow::Re
     msg.sha256 = Some(sha.clone());
     let buf = msg.to_bytes();
     send_frame(stream, buf).await?;
+    log::debug!(
+        "send-text: room={} relay={} bytes={} sha={} text_preview={}",
+        room,
+        relay,
+        msg.size,
+        sha,
+        text.chars().take(120).collect::<String>()
+    );
     record_send(
         &ctx.device_id,
         Some(ctx.device_name.clone()),

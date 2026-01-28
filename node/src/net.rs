@@ -3,11 +3,14 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 pub async fn connect(relay: &str) -> anyhow::Result<TcpStream> {
+    log::debug!("connect: target={}", relay);
     let s = TcpStream::connect(relay).await.context("connect")?;
+    log::info!("connect: ok target={}", relay);
     Ok(s)
 }
 
 pub async fn send_frame(mut stream: TcpStream, buf: Vec<u8>) -> anyhow::Result<()> {
+    log::debug!("send_frame: bytes={}", buf.len());
     stream
         .write_u32(buf.len() as u32)
         .await
@@ -27,6 +30,13 @@ pub async fn send_join(
         join.sender_name = Some(device_name.to_string());
     }
     let join = join.to_bytes();
+    log::debug!(
+        "send_join: room={} device_id={} name_present={} bytes={}",
+        room,
+        device_id,
+        !device_name.trim().is_empty(),
+        join.len()
+    );
     writer
         .write_u32(join.len() as u32)
         .await

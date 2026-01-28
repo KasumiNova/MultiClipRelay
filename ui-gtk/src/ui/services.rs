@@ -41,6 +41,7 @@ pub struct ServiceConfigInputs {
     pub max_file_spin: gtk4::SpinButton,
     pub x11_poll_spin: gtk4::SpinButton,
     pub image_mode_combo: gtk4::ComboBoxText,
+    pub debug_check: gtk4::CheckButton,
 }
 
 pub fn make_update_services_ui(
@@ -115,6 +116,7 @@ pub fn connect_service_handlers(
         max_file_spin,
         x11_poll_spin,
         image_mode_combo,
+        debug_check,
     } = inputs;
 
     let use_systemd = systemd::enabled_from_env_or_auto();
@@ -148,6 +150,7 @@ pub fn connect_service_handlers(
     let max_image_spin_c = max_image_spin.clone();
     let max_file_spin_c = max_file_spin.clone();
     let image_mode_combo_c = image_mode_combo.clone();
+    let debug_check_c = debug_check.clone();
 
     let mk_cfg_from_ui: Rc<dyn Fn() -> crate::config::UiConfig> = Rc::new(move || {
         crate::config::UiConfig {
@@ -159,6 +162,7 @@ pub fn connect_service_handlers(
             image_mode: combo_active_id_or(&image_mode_combo_c, DEFAULT_IMAGE_MODE_ID),
             x11_poll_interval_ms: spin_usize(&x11_poll_spin_for_cfg) as u64,
             language: "auto".to_string(),
+            debug_mode: debug_check_c.is_active(),
             history_columns: Default::default(),
             force_png: None,
         }

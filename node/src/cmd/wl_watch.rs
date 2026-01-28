@@ -345,6 +345,13 @@ pub(super) async fn wl_watch_hook() -> anyhow::Result<()> {
             debug(&format!("hook: send_frame failed: {:#}", e));
             return Ok(());
         }
+        log::debug!(
+            "wl-watch: sent kind={:?} mime={} bytes={} sha={:?}",
+            msg.kind,
+            send_mime,
+            msg.size,
+            msg.sha256
+        );
         record_send(
             &ctx.device_id,
             Some(ctx.device_name.clone()),
@@ -433,6 +440,7 @@ async fn wl_watch_poll(
     let stream = connect(relay).await?;
     let (_reader, mut writer) = stream.into_split();
     send_join(&mut writer, &ctx.device_id, &ctx.device_name, room).await?;
+    log::info!("wl-watch(poll): connected room='{}' relay='{}'", room, relay);
     println!("wl-watch(poll): room='{}' relay='{}'", room, relay);
 
     let mut last_text_hash: Option<String> = None;
@@ -599,6 +607,12 @@ async fn wl_watch_poll(
                     let mut msg = Message::new_text(&ctx.device_id, room, "");
                     msg.payload = Some(text_bytes);
                     msg.size = msg.payload.as_ref().map(|p| p.len()).unwrap_or(0);
+                    let preview = msg
+                        .payload
+                        .as_ref()
+                        .map(|p| String::from_utf8_lossy(p).chars().take(120).collect::<String>())
+                        .unwrap_or_default();
+                    log::debug!("wl-watch: text preview={}", preview);
                     if !ctx.device_name.trim().is_empty() {
                         msg.sender_name = Some(ctx.device_name.clone());
                     }
@@ -618,6 +632,11 @@ async fn wl_watch_poll(
                         Some(h.clone()),
                     )
                     .await;
+                    log::debug!(
+                        "wl-watch: sent kind=text mime=text/plain;charset=utf-8 bytes={} sha={}",
+                        msg.size,
+                        h
+                    );
                     last_text_hash = Some(h);
                 }
             }
@@ -671,6 +690,12 @@ async fn wl_watch_poll(
                         Some(h.clone()),
                     )
                     .await;
+                    log::debug!(
+                        "wl-watch: sent kind=image mime={} bytes={} sha={}",
+                        send_mime,
+                        msg.size,
+                        h
+                    );
                     last_img_hash.insert(send_mime.to_string(), h);
                     if send_mime != "image/png" {
                         sent_non_png = true;
@@ -694,6 +719,7 @@ async fn wl_watch_evented(
     image_mode: ImageMode,
 ) -> anyhow::Result<()> {
     let exe = std::env::current_exe().context("current_exe")?;
+    log::info!("wl-watch(watch): room='{}' relay='{}'", room, relay);
     println!("wl-watch(watch): room='{}' relay='{}'", room, relay);
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -1142,8 +1168,15 @@ pub(super) async fn wl_publish_current(
     if !ctx.device_name.trim().is_empty() {
         msg.sender_name = Some(ctx.device_name.clone());
     }
-    msg.sha256 = Some(sha);
+    msg.sha256 = Some(sha.clone());
     send_frame(stream, msg.to_bytes()).await?;
+    log::debug!(
+        "wl-watch: sent kind={:?} mime={} bytes={} sha={}",
+        msg.kind,
+        send_mime,
+        msg.size,
+        sha
+    );
     record_send(
         &ctx.device_id,
         Some(ctx.device_name.clone()),

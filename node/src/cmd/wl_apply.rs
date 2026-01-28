@@ -61,6 +61,7 @@ pub(super) async fn run_wl_apply(
             tokio::time::sleep(reconnect_backoff).await;
             continue;
         }
+        log::info!("wl-apply: connected room='{}' relay='{}'", room, relay);
         println!("wl-apply: room='{}' relay='{}'", room, relay);
 
         let mut hb = tokio::time::interval(heartbeat_interval);
@@ -92,6 +93,14 @@ pub(super) async fn run_wl_apply(
                 break;
             }
             let msg = Message::from_bytes(&buf);
+            log::debug!(
+                "wl-apply: recv kind={:?} from={} mime={:?} bytes={} sha={:?}",
+                msg.kind,
+                msg.device_id,
+                msg.mime,
+                msg.payload.as_ref().map(|p| p.len()).unwrap_or(0),
+                msg.sha256
+            );
 
             // don't apply our own
             if msg.device_id == ctx.device_id {
@@ -107,6 +116,11 @@ pub(super) async fn run_wl_apply(
             match msg.kind {
                 Kind::Text => {
                     if let Some(payload) = msg.payload.as_deref() {
+                        let preview = String::from_utf8_lossy(payload)
+                            .chars()
+                            .take(120)
+                            .collect::<String>();
+                        log::debug!("wl-apply: text preview={}", preview);
                         wl_copy("text/plain;charset=utf-8", payload).await.ok();
                         record_recv(&ctx.device_id, Some(ctx.device_name.clone()), room, relay, &msg).await;
                         if let Some(sha) = msg.sha256.as_deref() {

@@ -471,6 +471,16 @@ pub async fn send_file(
     msg.sha256 = Some(sha.clone());
     send_frame(stream, msg.to_bytes()).await?;
 
+    log::debug!(
+        "send-file: room={} relay={} name={} mime={} bytes={} sha={}",
+        room,
+        relay,
+        name,
+        TAR_MIME,
+        msg.size,
+        sha
+    );
+
     record_send(
         local_device_id,
         local_name_opt,

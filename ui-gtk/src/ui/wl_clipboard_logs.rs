@@ -55,6 +55,8 @@ fn read_wl_clipboard_journal() -> String {
         .args([
             "--user",
             "-u",
+            systemd::UNIT_RELAY,
+            "-u",
             systemd::UNIT_WL_WATCH,
             "-u",
             systemd::UNIT_WL_APPLY,

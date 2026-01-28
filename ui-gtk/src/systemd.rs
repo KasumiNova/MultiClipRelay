@@ -94,6 +94,11 @@ fn env_path() -> PathBuf {
     base.join("multicliprelay").join("multicliprelay.env")
 }
 
+fn rust_log_for_debug() -> &'static str {
+    // Keep it focused to avoid noisy deps, but still include core crates.
+    "node=debug,relay=debug"
+}
+
 pub fn write_env_from_ui_config(cfg: &UiConfig) -> anyhow::Result<()> {
     let path = env_path();
     if let Some(parent) = path.parent() {
@@ -130,6 +135,21 @@ pub fn write_env_from_ui_config(cfg: &UiConfig) -> anyhow::Result<()> {
         cfg.x11_poll_interval_ms
     ));
 
+    if cfg.debug_mode {
+        lines.push(format!("RUST_LOG={}", rust_log_for_debug()));
+        lines.push("MCR_WL_WATCH_DEBUG=1".to_string());
+    }
+
     std::fs::write(&path, lines.join("\n") + "\n").context("write env")?;
     Ok(())
+}
+
+pub fn apply_runtime_env_from_ui_config(cfg: &UiConfig) {
+    if cfg.debug_mode {
+        std::env::set_var("RUST_LOG", rust_log_for_debug());
+        std::env::set_var("MCR_WL_WATCH_DEBUG", "1");
+    } else {
+        std::env::remove_var("RUST_LOG");
+        std::env::remove_var("MCR_WL_WATCH_DEBUG");
+    }
 }

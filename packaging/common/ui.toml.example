@@ -11,3 +11,6 @@ image_mode = "force-png"
 
 # auto | zh-cn | en
 language = "auto"
+
+# Debug logs (true/false)
+debug_mode = false

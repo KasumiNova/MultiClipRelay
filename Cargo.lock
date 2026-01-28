@@ -1555,6 +1555,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "env_logger",
+ "log",
  "serde",
  "tokio",
  "utils",

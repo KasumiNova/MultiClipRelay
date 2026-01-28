@@ -73,6 +73,16 @@ pub async fn record_send(
     bytes: usize,
     sha256: Option<String>,
 ) {
+    log::debug!(
+        "send: room={} relay={} kind={:?} mime={:?} name={:?} bytes={} sha={:?}",
+        room,
+        relay,
+        kind,
+        mime,
+        name,
+        bytes,
+        sha256
+    );
     append_history(HistoryEvent {
         ts_ms: utils::now_ms(),
         dir: "send".to_string(),
@@ -98,6 +108,17 @@ pub async fn record_recv(
     relay: &str,
     msg: &Message,
 ) {
+    log::debug!(
+        "recv: room={} relay={} from={} kind={:?} mime={:?} name={:?} bytes={} sha={:?}",
+        room,
+        relay,
+        msg.device_id,
+        msg.kind,
+        msg.mime,
+        msg.name,
+        msg.payload.as_ref().map(|p| p.len()).unwrap_or(0),
+        msg.sha256
+    );
     append_history(HistoryEvent {
         ts_ms: utils::now_ms(),
         dir: "recv".to_string(),

@@ -21,6 +21,9 @@ pub struct UiConfig {
     #[serde(default = "default_language")]
     pub language: String,
 
+    #[serde(default)]
+    pub debug_mode: bool,
+
     /// History table column visibility map.
     /// Key = column id (e.g. "peer"), value = visible.
     /// Empty map means "use built-in defaults".
@@ -61,6 +64,7 @@ impl Default for UiConfig {
             image_mode: default_image_mode(),
             x11_poll_interval_ms: default_x11_poll_interval_ms(),
             language: default_language(),
+            debug_mode: false,
             history_columns: BTreeMap::new(),
             force_png: None,
         }

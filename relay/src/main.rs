@@ -15,6 +15,9 @@ type SharedRooms = Arc<Mutex<HashMap<String, Vec<(ConnId, Tx)>>>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .try_init();
+
     let mut addr = std::env::var("RELAY_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
 
     // Minimal CLI parsing (avoid extra deps):
@@ -43,15 +46,20 @@ async fn main() -> anyhow::Result<()> {
     loop {
         let (socket, peer) = listener.accept().await.context("accept")?;
         let rooms = rooms.clone();
+        log::info!("relay: accept peer={}", peer);
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(socket, rooms).await {
-                eprintln!("connection error {}: {:?}", peer, e);
+            if let Err(e) = handle_conn(socket, rooms, peer).await {
+                log::warn!("relay: connection error peer={} err={:?}", peer, e);
             }
         });
     }
 }
 
-async fn handle_conn(socket: TcpStream, rooms: SharedRooms) -> anyhow::Result<()> {
+async fn handle_conn(
+    socket: TcpStream,
+    rooms: SharedRooms,
+    peer: std::net::SocketAddr,
+) -> anyhow::Result<()> {
     let conn_id: ConnId = rand_conn_id();
     let (mut reader, mut writer_half) = socket.into_split();
     // create outbound channel
@@ -80,7 +88,12 @@ async fn handle_conn(socket: TcpStream, rooms: SharedRooms) -> anyhow::Result<()
             Ok(Ok(l)) => l as usize,
             Ok(Err(_)) => break,
             Err(_) => {
-                eprintln!("connection idle timeout ({}s), closing", idle_timeout.as_secs());
+                log::warn!(
+                    "relay: idle timeout peer={} conn_id={} ({}s)",
+                    peer,
+                    conn_id,
+                    idle_timeout.as_secs()
+                );
                 break;
             }
         };
@@ -96,6 +109,12 @@ async fn handle_conn(socket: TcpStream, rooms: SharedRooms) -> anyhow::Result<()
                 .or_default()
                 .push((conn_id, tx.clone()));
             registered_room = Some(r);
+            log::info!(
+                "relay: register peer={} conn_id={} room={}",
+                peer,
+                conn_id,
+                registered_room.as_deref().unwrap_or("?")
+            );
         }
 
         // broadcast to room
@@ -109,6 +128,15 @@ async fn handle_conn(socket: TcpStream, rooms: SharedRooms) -> anyhow::Result<()
         if let Some(list) = map.get_mut(&room) {
             // Drop only closed channels (a full channel should not kick the client).
             list.retain(|(_, s)| !s.is_closed());
+            let targets = list.len().saturating_sub(1);
+            log::debug!(
+                "relay: broadcast room={} from_conn={} peer={} targets={} bytes={}",
+                room,
+                conn_id,
+                peer,
+                targets,
+                out.len()
+            );
             for (id, s) in list.iter() {
                 if *id == conn_id {
                     continue;
@@ -122,13 +150,20 @@ async fn handle_conn(socket: TcpStream, rooms: SharedRooms) -> anyhow::Result<()
     drop(tx);
     let _ = writer.await;
     // remove from rooms
-    if let Some(room) = registered_room {
+    if let Some(room) = registered_room.clone() {
         let mut map = rooms.lock().await;
         if let Some(list) = map.get_mut(&room) {
             // remove closed channels
             list.retain(|(_, s)| !s.is_closed());
         }
     }
+
+    log::info!(
+        "relay: disconnect peer={} conn_id={} room={:?}",
+        peer,
+        conn_id,
+        registered_room
+    );
 
     Ok(())
 }

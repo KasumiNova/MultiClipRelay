@@ -50,6 +50,7 @@ pub fn build_ui(app: &gtk4::Application) {
 
     let cfg_path = config_path();
     let cfg = load_config(&cfg_path).unwrap_or_default();
+    systemd::apply_runtime_env_from_ui_config(&cfg);
 
     let initial_lang = if cfg.language == LANG_AUTO_ID {
         detect_lang_from_env()
@@ -236,6 +237,12 @@ columnview listview row:hover:not(:selected) {
     let lbl_x11_poll = gtk4::Label::builder().xalign(0.0).build();
     let lbl_img_mode = gtk4::Label::builder().xalign(0.0).build();
     let lbl_lang = gtk4::Label::builder().xalign(0.0).build();
+    let lbl_debug = gtk4::Label::builder().xalign(0.0).build();
+
+    let debug_check = gtk4::CheckButton::builder()
+        .active(cfg.debug_mode)
+        .label(t(initial_lang, K::LabelDebugEnable))
+        .build();
 
     config_grid.attach(&lbl_relay, 0, 0, 1, 1);
     config_grid.attach(&relay_entry, 1, 0, 1, 1);
@@ -259,6 +266,9 @@ columnview listview row:hover:not(:selected) {
 
     config_grid.attach(&lbl_lang, 0, 6, 1, 1);
     config_grid.attach(&language_combo, 1, 6, 3, 1);
+
+    config_grid.attach(&lbl_debug, 0, 7, 1, 1);
+    config_grid.attach(&debug_check, 1, 7, 3, 1);
 
     config_frame.set_child(Some(&config_grid));
 
@@ -577,6 +587,8 @@ columnview listview row:hover:not(:selected) {
             lbl_x11_poll: lbl_x11_poll.clone(),
         lbl_img_mode: lbl_img_mode.clone(),
         lbl_lang: lbl_lang.clone(),
+        lbl_debug: lbl_debug.clone(),
+        debug_check: debug_check.clone(),
         lbl_relay_tcp: svc_lbl_relay_tcp.clone(),
         start_relay: start_relay_btn.clone(),
         stop_relay: stop_relay_btn.clone(),
@@ -626,6 +638,7 @@ columnview listview row:hover:not(:selected) {
             max_file_spin: max_file_spin.clone(),
                         x11_poll_spin: x11_poll_spin.clone(),
             image_mode_combo: image_mode_combo.clone(),
+            debug_check: debug_check.clone(),
         },
     );
 
@@ -667,6 +680,7 @@ columnview listview row:hover:not(:selected) {
             image_mode_combo: image_mode_combo.clone(),
             mode_hint: mode_hint.clone(),
             reload_btn: reload_btn.clone(),
+            debug_check: debug_check.clone(),
         },
         suppress_save_cfg: suppress_save_cfg.clone(),
         suppress_lang_combo: suppress_lang_combo.clone(),

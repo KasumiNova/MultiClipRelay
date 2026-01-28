@@ -107,6 +107,15 @@ pub async fn send_image(
 
     send_frame(stream, msg.to_bytes()).await?;
 
+    log::debug!(
+        "send-image: room={} relay={} mime={} bytes={} sha={}",
+        room,
+        relay,
+        send_mime,
+        msg.size,
+        sha
+    );
+
     record_send(
         local_device_id,
         local_name_opt,

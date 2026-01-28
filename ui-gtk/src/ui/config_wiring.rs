@@ -24,6 +24,7 @@ pub struct ConfigWidgets {
     pub image_mode_combo: gtk4::ComboBoxText,
     pub mode_hint: gtk4::Label,
     pub reload_btn: gtk4::Button,
+    pub debug_check: gtk4::CheckButton,
 }
 
 pub struct ConfigWiringCtx {
@@ -64,12 +65,14 @@ pub fn make_save_cfg(cfg_path: PathBuf, ui: ConfigWidgets) -> Rc<dyn Fn()> {
         cfg.image_mode = image_mode;
         cfg.x11_poll_interval_ms = ui.x11_poll_spin.value() as u64;
         cfg.language = language;
+        cfg.debug_mode = ui.debug_check.is_active();
         cfg.force_png = None;
         if let Err(e) = save_config(&cfg_path, &cfg) {
             eprintln!("save config failed: {:?}", e);
         }
         // Best-effort: keep systemd EnvironmentFile in sync.
         let _ = systemd::write_env_from_ui_config(&cfg);
+        systemd::apply_runtime_env_from_ui_config(&cfg);
     })
 }
 
@@ -99,6 +102,7 @@ pub fn connect_config_wiring(ctx: ConfigWiringCtx) {
         image_mode_combo,
         mode_hint,
         reload_btn,
+        debug_check,
     } = ui;
 
     // Save config on change (simple + good enough)
@@ -184,6 +188,13 @@ pub fn connect_config_wiring(ctx: ConfigWiringCtx) {
         (save_cfg)();
     }));
 
+    debug_check.connect_toggled(clone!(@strong save_cfg, @strong suppress_save_cfg => move |_| {
+        if suppress_save_cfg.get() {
+            return;
+        }
+        (save_cfg)();
+    }));
+
     // Reload config from disk and apply into the UI.
     reload_btn.connect_clicked(clone!(
         @strong log_tx,
@@ -202,7 +213,8 @@ pub fn connect_config_wiring(ctx: ConfigWiringCtx) {
         @weak x11_poll_spin,
         @weak language_combo,
         @weak image_mode_combo,
-        @weak mode_hint
+        @weak mode_hint,
+        @weak debug_check
         => move |_| {
             match load_config(&cfg_path) {
                 Ok(cfg) => {
@@ -238,8 +250,11 @@ pub fn connect_config_wiring(ctx: ConfigWiringCtx) {
                         .unwrap_or_else(|| DEFAULT_IMAGE_MODE_ID.to_string());
                     mode_hint.set_text(image_mode_hint_text(lang, &mode));
 
+                    debug_check.set_active(cfg.debug_mode);
+
                     suppress_save_cfg.set(false);
                     let _ = systemd::write_env_from_ui_config(&cfg);
+                    systemd::apply_runtime_env_from_ui_config(&cfg);
                     (update_services_ui)();
                     let _ = log_tx.send(format!("reloaded config: {}", cfg_path.display()));
                 }

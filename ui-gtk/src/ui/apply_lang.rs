@@ -41,6 +41,8 @@ pub struct ApplyLangCtx {
     pub lbl_x11_poll: gtk4::Label,
     pub lbl_img_mode: gtk4::Label,
     pub lbl_lang: gtk4::Label,
+    pub lbl_debug: gtk4::Label,
+    pub debug_check: gtk4::CheckButton,
 
     // Services / status labels
     pub lbl_relay_tcp: gtk4::Label,
@@ -93,6 +95,7 @@ pub fn make_apply_lang(ctx: ApplyLangCtx) -> Rc<dyn Fn(Lang)> {
         ctx.lbl_x11_poll.set_text(t(lang, K::LabelX11PollIntervalMs));
         ctx.lbl_img_mode.set_text(t(lang, K::LabelImageMode));
         ctx.lbl_lang.set_text(t(lang, K::LabelLanguage));
+        ctx.lbl_debug.set_text(t(lang, K::LabelDebugMode));
         ctx.lbl_relay_tcp.set_text(t(lang, K::LabelRelayTcp));
 
         // Buttons
@@ -111,6 +114,9 @@ pub fn make_apply_lang(ctx: ApplyLangCtx) -> Rc<dyn Fn(Lang)> {
         ctx.send_test_image.set_label(t(lang, K::BtnSendTestImage));
         ctx.send_test_file.set_label(t(lang, K::BtnSendTestFile));
         ctx.show_clip_types.set_label(t(lang, K::BtnShowClipTypes));
+
+        ctx.debug_check
+            .set_label(Some(t(lang, K::LabelDebugEnable)));
 
         ctx.clear_logs_btn.set_label(t(lang, K::BtnClearLogs));
         ctx.clear_history_btn.set_label(t(lang, K::BtnClearHistory));
