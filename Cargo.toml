@@ -11,4 +11,6 @@ members = [
     "node",
     "ui-gtk",
     "ui-tray",
+    "ui-egui",
+    "ui-tray-win",
 ]

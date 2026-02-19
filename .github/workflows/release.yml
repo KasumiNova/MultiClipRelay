@@ -83,6 +83,41 @@ jobs:
             ${{ steps.tar.outputs.path }}
             ${{ steps.deb.outputs.path }}
 
+  windows:
+    name: Windows
+    needs: linux
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binaries
+        run: cargo build --release -p relay -p node -p ui-egui -p ui-tray-win
+
+      - name: Create zip
+        id: zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = "$env:GITHUB_REF_NAME".TrimStart('v')
+          $outdir = "dist/release"
+          $pkg = "multicliprelay-$ver-x86_64-windows"
+          New-Item -ItemType Directory -Force -Path "$outdir/$pkg" | Out-Null
+          Copy-Item -Force "target/release/relay.exe" "$outdir/$pkg/multicliprelay-relay.exe"
+          Copy-Item -Force "target/release/node.exe"  "$outdir/$pkg/multicliprelay-node.exe"
+          Copy-Item -Force "target/release/ui-egui.exe"  "$outdir/$pkg/multicliprelay-ui-egui.exe"
+          Copy-Item -Force "target/release/ui-tray-win.exe"  "$outdir/$pkg/multicliprelay-ui-tray.exe"
+          $zipPath = "$outdir/$pkg.zip"
+          if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+          Compress-Archive -Path "$outdir/$pkg" -DestinationPath $zipPath
+          "path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.zip.outputs.path }}
+
   aur:
     name: Publish to AUR (binary)
     needs: linux

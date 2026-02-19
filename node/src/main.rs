@@ -1,30 +1,53 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+#[cfg(unix)]
 use std::fs::File;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
+#[cfg(unix)]
 use tokio::process::Command;
+#[cfg(unix)]
 use std::io;
 
 use utils::{Kind, Message};
-use node::consts::{
-    GNOME_COPIED_FILES_MIME, KDE_URI_LIST_MIME, URI_LIST_MIME,
-};
+#[cfg(unix)]
+use node::consts::{GNOME_COPIED_FILES_MIME, KDE_URI_LIST_MIME, URI_LIST_MIME};
 use node::hash::sha256_hex;
 use node::history::{record_recv, record_send};
 use node::image_mode::parse_image_mode;
 use node::net::{connect, send_frame, send_join};
-use node::paths::{default_state_dir, safe_for_filename};
+use node::paths::default_state_dir;
+#[cfg(unix)]
+use node::paths::safe_for_filename;
 use node::transfer_file::send_file;
 use node::transfer_image::send_image;
+#[cfg(unix)]
 use node::x11_sync::{x11_hook_apply_wayland_to_x11, x11_sync_service, X11SyncOpts};
 
 #[path = "cmd/wl_apply.rs"]
+#[cfg(unix)]
 mod cmd_wl_apply;
 
 #[path = "cmd/wl_watch.rs"]
+#[cfg(unix)]
 mod cmd_wl_watch;
+
+#[path = "cmd/win_apply.rs"]
+#[cfg(windows)]
+mod cmd_win_apply;
+
+#[path = "cmd/win_watch.rs"]
+#[cfg(windows)]
+mod cmd_win_watch;
+
+#[path = "win_clipboard.rs"]
+#[cfg(windows)]
+mod win_clipboard;
+
+#[path = "win_image.rs"]
+#[cfg(windows)]
+mod win_image;
 
 // (ImageMode + parsing are in node::image_mode)
 
@@ -120,6 +143,7 @@ enum Commands {
     },
 
     /// Watch local Wayland clipboard (text + image/png) and publish to relay.
+    #[cfg(unix)]
     WlWatch {
         #[arg(long, default_value = "default")]
         room: String,
@@ -144,6 +168,7 @@ enum Commands {
     },
 
     /// Apply incoming events to local Wayland clipboard (text + image/png).
+    #[cfg(unix)]
     WlApply {
         #[arg(long, default_value = "default")]
         room: String,
@@ -155,6 +180,7 @@ enum Commands {
     },
 
     /// Internal: invoked by wl-paste --watch to publish current clipboard content.
+    #[cfg(unix)]
     #[command(hide = true)]
     WlPublishCurrent {
         #[arg(long, default_value = "default")]
@@ -179,6 +205,7 @@ enum Commands {
     ///
     /// - X11 -> Wayland: polling (small interval)
     /// - Wayland -> X11: event-driven via wl-paste --watch
+    #[cfg(unix)]
     X11Sync {
         /// X11 poll interval (ms)
         #[arg(long, default_value_t = 200)]
@@ -190,6 +217,7 @@ enum Commands {
     },
 
     /// Internal: invoked by wl-paste --watch for Wayland -> X11 sync.
+    #[cfg(unix)]
     #[command(hide = true)]
     X11Hook {
         /// text | image
@@ -198,6 +226,34 @@ enum Commands {
         /// Max stdin bytes allowed
         #[arg(long, default_value_t = 20 * 1024 * 1024)]
         max_bytes: usize,
+    },
+
+    /// Watch local Windows clipboard text (CF_UNICODETEXT) and publish to relay.
+    #[cfg(windows)]
+    WinWatch {
+        #[arg(long, default_value = "default")]
+        room: String,
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        relay: String,
+        /// Poll interval (ms).
+        #[arg(long, default_value_t = 200)]
+        interval_ms: u64,
+        #[arg(long, default_value_t = 1 * 1024 * 1024)]
+        max_text_bytes: usize,
+        #[arg(long, default_value_t = 20 * 1024 * 1024)]
+        max_image_bytes: usize,
+        /// Max bytes allowed to send for file clipboard (CF_HDROP)
+        #[arg(long, default_value_t = 20 * 1024 * 1024)]
+        max_file_bytes: usize,
+    },
+
+    /// Apply incoming text events to local Windows clipboard (CF_UNICODETEXT).
+    #[cfg(windows)]
+    WinApply {
+        #[arg(long, default_value = "default")]
+        room: String,
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        relay: String,
     },
 }
 
@@ -210,8 +266,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Internal hook mode: wl-paste --watch can only execute a single command (no extra args).
     // We use env vars to pass parameters and run a hidden publish step when invoked without args.
-    if std::env::var_os("MCR_WL_WATCH_HOOK").is_some() && std::env::args_os().len() <= 1 {
-        return cmd_wl_watch::wl_watch_hook().await;
+    #[cfg(unix)]
+    {
+        if std::env::var_os("MCR_WL_WATCH_HOOK").is_some() && std::env::args_os().len() <= 1 {
+            return cmd_wl_watch::wl_watch_hook().await;
+        }
     }
 
     let cli = Cli::parse();
@@ -251,6 +310,7 @@ async fn main() -> anyhow::Result<()> {
             relay,
             max_file_bytes,
         } => send_file(&ctx.device_id, &ctx.device_name, &room, &file, &relay, max_file_bytes).await?,
+        #[cfg(unix)]
         Commands::WlWatch {
             room,
             relay,
@@ -275,6 +335,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?
         }
+        #[cfg(unix)]
         Commands::WlApply {
             room,
             relay,
@@ -283,6 +344,7 @@ async fn main() -> anyhow::Result<()> {
             let im = parse_image_mode(&image_mode)?;
             cmd_wl_apply::run_wl_apply(&ctx, &room, &relay, im).await?
         }
+        #[cfg(unix)]
         Commands::WlPublishCurrent {
             room,
             relay,
@@ -306,6 +368,7 @@ async fn main() -> anyhow::Result<()> {
             .await?
         }
 
+        #[cfg(unix)]
         Commands::X11Sync {
             x11_poll_interval_ms,
             max_text_bytes,
@@ -399,6 +462,7 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
 
+        #[cfg(unix)]
         Commands::X11Hook { kind, max_bytes } => {
             // IMPORTANT:
             // 这里不要阻塞式 read_to_end 等待 EOF。
@@ -420,6 +484,32 @@ async fn main() -> anyhow::Result<()> {
             }
 
             x11_hook_apply_wayland_to_x11(&ctx.state_dir, &kind, sample).await;
+        }
+
+        #[cfg(windows)]
+        Commands::WinWatch {
+            room,
+            relay,
+            interval_ms,
+            max_text_bytes,
+            max_image_bytes,
+            max_file_bytes,
+        } => {
+            cmd_win_watch::run_win_watch(
+                &ctx,
+                &room,
+                &relay,
+                interval_ms,
+                max_text_bytes,
+                max_image_bytes,
+                max_file_bytes,
+            )
+            .await?
+        }
+
+        #[cfg(windows)]
+        Commands::WinApply { room, relay } => {
+            cmd_win_apply::run_win_apply(&ctx, &room, &relay).await?
         }
     }
     Ok(())
