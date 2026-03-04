@@ -111,7 +111,7 @@ fn convert_selection_get(
                 return Ok(None);
             }
             let reply = conn
-                .get_property(false, win, property, AtomEnum::ANY, 0, u32::MAX)
+                .get_property(false, win, property, AtomEnum::ANY, 0, u32::MAX / 4)
                 .context("get_property")?
                 .reply()
                 .context("get_property reply")?;
