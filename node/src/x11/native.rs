@@ -366,7 +366,7 @@ fn get_atom_pairs<C: Connection>(
     property: Atom,
 ) -> anyhow::Result<Option<Vec<(Atom, Atom)>>> {
     // MULTIPLE data is ATOM 32 pairs.
-    let reply = match conn.get_property(false, requestor, property, AtomEnum::ATOM, 0, u32::MAX / 4) {
+    let reply = match conn.get_property(false, requestor, property, AtomEnum::ATOM, 0, 0xFFFFFF) {
         Ok(c) => c.reply(),
         Err(_) => return Ok(None),
     };

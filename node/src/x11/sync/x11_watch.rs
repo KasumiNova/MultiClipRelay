@@ -110,19 +110,33 @@ fn convert_selection_get(
             if n.property == u32::from(AtomEnum::NONE) {
                 return Ok(None);
             }
-            let reply = conn
-                .get_property(false, win, property, AtomEnum::ANY, 0, u32::MAX / 4)
-                .context("get_property")?
-                .reply()
-                .context("get_property reply")?;
-            // INCR not supported.
-            if reply.type_ == intern_atom(conn, "INCR")? {
-                return Ok(None);
+            let mut offset = 0;
+            let mut all_bytes = Vec::new();
+            loop {
+                // Use a safe maximum length per request (0xFFFFFF words = ~67MB max) 
+                // to completely avoid any X.org/Xwayland malloc integer overflows,
+                // while looping to support arbitrarily large non-INCR properties.
+                let reply = conn
+                    .get_property(false, win, property, AtomEnum::ANY, offset, 0xFFFFFF)
+                    .context("get_property")?
+                    .reply()
+                    .context("get_property reply")?;
+
+                // INCR not supported.
+                if offset == 0 && reply.type_ == intern_atom(conn, "INCR")? {
+                    return Ok(None);
+                }
+
+                all_bytes.extend_from_slice(&reply.value);
+
+                if reply.bytes_after == 0 {
+                    break;
+                }
+                offset += (reply.value.len() as u32) / 4;
             }
-            let bytes = reply.value;
             let _ = conn.delete_property(win, property);
             conn.flush().ok();
-            return Ok(Some(bytes));
+            return Ok(Some(all_bytes));
         }
     }
 }
